@@ -1,0 +1,1 @@
+# singbox-outbound-updater
