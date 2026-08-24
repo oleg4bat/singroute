@@ -6,7 +6,4 @@ dist/
 build/
 *.egg-info/
 *.spec
-exported.json
-router.json
-result.json
 singbox-outbound-updater.ini

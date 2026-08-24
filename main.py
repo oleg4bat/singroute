@@ -1,5 +1,5 @@
-from singbox_outbound_updater.main import main
+from singbox_outbound_updater.gui.app import run_gui
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_gui())

@@ -158,15 +158,6 @@ class SshRouterClient:
             daemon=True,
         ).start()
 
-    def __enter__(self) -> SshRouterClient:
-        self.connect()
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self._report("SSH: завершаю соединение")
-        self.close()
-        self._report("SSH: соединение завершено")
-
     def read_text(self, path: str) -> str:
         result = self.run(f"cat {shlex.quote(path)}")
         if result.exit_code not in {0, -1}:
