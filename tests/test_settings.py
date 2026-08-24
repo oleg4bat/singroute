@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from singbox_outbound_updater.infrastructure.credentials import (
+import singroute.infrastructure.settings as settings_module
+from singroute.infrastructure.credentials import (
     CredentialStore,
     CredentialTarget,
+    LEGACY_SERVICE_NAME,
     SERVICE_NAME,
 )
-from singbox_outbound_updater.infrastructure.settings import (
+from singroute.infrastructure.settings import (
     AppSettings,
     PortableSettingsStore,
 )
@@ -27,7 +29,7 @@ def test_missing_ini_returns_openwrt_defaults(tmp_path: Path):
 
 
 def test_settings_round_trip_to_portable_ini_without_password(tmp_path: Path):
-    path = tmp_path / "singbox-outbound-updater.ini"
+    path = tmp_path / "SingRoute.ini"
     store = PortableSettingsStore(path)
     expected = AppSettings(
         host="openwrt.lan",
@@ -83,6 +85,39 @@ def test_credential_store_uses_endpoint_specific_windows_vault_key():
 
     store.delete_password(target)
     assert store.get_password(target) is None
+
+
+def test_default_store_reads_legacy_ini_until_new_settings_are_saved(
+    tmp_path: Path,
+    monkeypatch,
+):
+    legacy_path = tmp_path / "singbox-outbound-updater.ini"
+    legacy_path.write_text(
+        "[connection]\nhost = legacy-router.lan\nport = 2222\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings_module, "application_directory", lambda: tmp_path)
+
+    store = PortableSettingsStore()
+    loaded = store.load()
+
+    assert loaded.host == "legacy-router.lan"
+    assert loaded.port == 2222
+    assert store.path == tmp_path / "SingRoute.ini"
+
+    store.save(loaded)
+    assert store.path.exists()
+
+
+def test_credential_store_migrates_legacy_password_to_singroute_service():
+    backend = FakeKeyring()
+    store = CredentialStore(backend)
+    target = CredentialTarget("openwrt.lan", 22, "root")
+    backend.set_password(LEGACY_SERVICE_NAME, target.key, "legacy-password")
+
+    assert store.get_password(target) == "legacy-password"
+    assert backend.values[(SERVICE_NAME, target.key)] == "legacy-password"
+    assert (LEGACY_SERVICE_NAME, target.key) not in backend.values
 
 
 class FakeKeyring:

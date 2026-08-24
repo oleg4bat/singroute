@@ -5,8 +5,8 @@ import pytest
 import threading
 import time
 
-import singbox_outbound_updater.infrastructure.ssh_router as ssh_router
-from singbox_outbound_updater.infrastructure.ssh_router import (
+import singroute.infrastructure.ssh_router as ssh_router
+from singroute.infrastructure.ssh_router import (
     HostKeyMismatchError,
     SshOperationCancelled,
     SshRouterClient,

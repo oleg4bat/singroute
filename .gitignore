@@ -6,4 +6,5 @@ dist/
 build/
 *.egg-info/
 *.spec
+SingRoute.ini
 singbox-outbound-updater.ini

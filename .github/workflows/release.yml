@@ -53,14 +53,14 @@ jobs:
       - name: Create SHA-256 checksum
         shell: pwsh
         run: |
-          $asset = "dist/singbox-outbound-updater.exe"
+          $asset = "dist/SingRoute.exe"
           $digest = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$digest  singbox-outbound-updater.exe" | Set-Content -Encoding ascii "${asset}.sha256"
+          "$digest  SingRoute.exe" | Set-Content -Encoding ascii "${asset}.sha256"
 
       - name: Attest release binary
         uses: actions/attest@v4
         with:
-          subject-path: dist/singbox-outbound-updater.exe
+          subject-path: dist/SingRoute.exe
 
       - name: Publish GitHub Release
         shell: pwsh
@@ -68,8 +68,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create $env:GITHUB_REF_NAME `
-            "dist/singbox-outbound-updater.exe#Portable Windows application" `
-            "dist/singbox-outbound-updater.exe.sha256#SHA-256 checksum" `
+            "dist/SingRoute.exe#Portable Windows application" `
+            "dist/SingRoute.exe.sha256#SHA-256 checksum" `
             --verify-tag `
             --generate-notes `
-            --title "sing-box Outbound Updater $env:GITHUB_REF_NAME"
+            --title "SingRoute $env:GITHUB_REF_NAME"

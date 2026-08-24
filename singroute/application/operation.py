@@ -6,13 +6,13 @@ from dataclasses import dataclass
 import json
 from typing import Any
 
-from singbox_outbound_updater.core.converters import normalize_outbound_to_singbox
-from singbox_outbound_updater.core.errors import ConfigParseError
-from singbox_outbound_updater.core.patcher import (
+from singroute.core.converters import normalize_outbound_to_singbox
+from singroute.core.errors import ConfigParseError
+from singroute.core.patcher import (
     patch_router_config,
     select_exported_outbound,
 )
-from singbox_outbound_updater.core.preview import summarize_outbound
+from singroute.core.preview import summarize_outbound
 
 
 @dataclass(frozen=True)

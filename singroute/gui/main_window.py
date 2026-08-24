@@ -32,28 +32,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from singbox_outbound_updater.application.router_update import (
+from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
     apply_router_update,
     prepare_router_update,
     read_router_outbound_summary,
 )
-from singbox_outbound_updater.application.router_connection import (
+from singroute.application.router_connection import (
     RouterInfo,
     inspect_router,
 )
-from singbox_outbound_updater.gui.advanced_settings import AdvancedSettingsDialog
-from singbox_outbound_updater.gui.worker import Worker
-from singbox_outbound_updater.infrastructure.credentials import (
+from singroute.gui.advanced_settings import AdvancedSettingsDialog
+from singroute.gui.worker import Worker
+from singroute.infrastructure.credentials import (
     CredentialStore,
     CredentialTarget,
 )
-from singbox_outbound_updater.infrastructure.settings import (
+from singroute.infrastructure.settings import (
     AppSettings,
     PortableSettingsStore,
 )
-from singbox_outbound_updater.infrastructure.ssh_router import (
+from singroute.infrastructure.ssh_router import (
     HostKeyMismatchError,
     SshOperationCancelled,
     SshRouterClient,
@@ -91,7 +91,7 @@ class MainWindow(QMainWindow):
         self._busy = False
         self._operation_cancellable = False
 
-        self.setWindowTitle("sing-box Outbound Updater")
+        self.setWindowTitle("SingRoute")
         self.resize(self.settings.window_width, self.settings.window_height)
         self.setMinimumSize(780, 620)
         self._build_ui()
@@ -111,10 +111,10 @@ class MainWindow(QMainWindow):
 
         header = QHBoxLayout()
         header_text = QVBoxLayout()
-        title = QLabel("Обновление sing-box на OpenWrt")
+        title = QLabel("SingRoute")
         title.setObjectName("title")
         subtitle = QLabel(
-            "HAPP / NekoBox · проверка · резервная копия · автоматический откат"
+            "Безопасная синхронизация outbound sing-box на OpenWrt"
         )
         subtitle.setObjectName("subtitle")
         header_text.addWidget(title)

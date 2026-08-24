@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from singbox_outbound_updater.application.router_client import CommandResult
-from singbox_outbound_updater.application.router_update import (
+from singroute.application.router_client import CommandResult
+from singroute.application.router_update import (
     RouterConfigChangedError,
     RouterUpdateError,
     apply_router_update,

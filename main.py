@@ -1,4 +1,4 @@
-from singbox_outbound_updater.gui.app import run_gui
+from singroute.gui.app import run_gui
 
 
 if __name__ == "__main__":

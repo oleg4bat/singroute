@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from singbox_outbound_updater.infrastructure.settings import AppSettings
+from singroute.infrastructure.settings import AppSettings
 
 
 class AdvancedSettingsDialog(QDialog):

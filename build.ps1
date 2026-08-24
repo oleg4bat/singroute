@@ -5,9 +5,18 @@ poetry run pyinstaller `
     --clean `
     --onefile `
     --windowed `
-    --name singbox-outbound-updater `
-    --copy-metadata singbox-outbound-updater `
+    --name SingRoute `
+    --copy-metadata singroute `
     --hidden-import keyring.backends.Windows `
     main.py
 
-Write-Host "Portable application: dist\singbox-outbound-updater.exe"
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller failed with exit code $LASTEXITCODE"
+}
+
+$outputPath = Join-Path $PSScriptRoot "dist\SingRoute.exe"
+if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+    throw "PyInstaller did not create $outputPath"
+}
+
+Write-Host "Portable application: dist\SingRoute.exe"

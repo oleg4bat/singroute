@@ -2,11 +2,11 @@ import json
 
 import pytest
 
-from singbox_outbound_updater.application.operation import (
+from singroute.application.operation import (
     prepare_config_update,
     summarize_router_outbound,
 )
-from singbox_outbound_updater.core.errors import ConfigParseError, ConfigPatchError
+from singroute.core.errors import ConfigParseError, ConfigPatchError
 
 
 def test_summarize_router_outbound_masks_current_router_secrets():
