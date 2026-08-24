@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 import paramiko
 
-from singbox_outbound_updater.application.router_client import CommandResult
+from singroute.application.router_client import CommandResult
 
 
 class SshRouterError(RuntimeError):

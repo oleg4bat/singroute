@@ -8,13 +8,14 @@ from pathlib import Path
 import os
 import sys
 
-from singbox_outbound_updater.application.router_update import (
+from singroute.application.router_update import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_SERVICE_NAME,
 )
 
 
-SETTINGS_FILENAME = "singbox-outbound-updater.ini"
+SETTINGS_FILENAME = "SingRoute.ini"
+LEGACY_SETTINGS_FILENAME = "singbox-outbound-updater.ini"
 VALID_AUTH_MODES = {"auto", "key", "password"}
 
 
@@ -40,16 +41,25 @@ class AppSettings:
 
 class PortableSettingsStore:
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or application_directory() / SETTINGS_FILENAME
+        if path is None:
+            directory = application_directory()
+            self.path = directory / SETTINGS_FILENAME
+            self.legacy_path: Path | None = directory / LEGACY_SETTINGS_FILENAME
+        else:
+            self.path = path
+            self.legacy_path = None
 
     def load(self) -> AppSettings:
         settings = AppSettings()
-        if not self.path.exists():
+        source_path = self.path
+        if not source_path.exists() and self.legacy_path is not None:
+            source_path = self.legacy_path
+        if not source_path.exists():
             return settings
 
         parser = _new_parser()
         try:
-            parser.read(self.path, encoding="utf-8")
+            parser.read(source_path, encoding="utf-8")
         except (OSError, UnicodeError):
             return settings
 

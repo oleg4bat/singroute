@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import shlex
 
-from singbox_outbound_updater.application.router_client import RouterClient
+from singroute.application.router_client import RouterClient
 
 
 @dataclass(frozen=True)

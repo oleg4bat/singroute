@@ -9,11 +9,11 @@ import re
 import shlex
 from typing import Any
 
-from singbox_outbound_updater.application.operation import (
+from singroute.application.operation import (
     prepare_config_update,
     summarize_router_outbound,
 )
-from singbox_outbound_updater.application.router_client import (
+from singroute.application.router_client import (
     CommandResult,
     RouterClient,
 )

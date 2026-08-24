@@ -6,15 +6,15 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from singbox_outbound_updater import __version__
-from singbox_outbound_updater.gui.main_window import MainWindow
+from singroute import __version__
+from singroute.gui.main_window import MainWindow
 
 
 def run_gui() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("sing-box Outbound Updater")
+    app.setApplicationName("SingRoute")
     app.setApplicationVersion(__version__)
-    app.setOrganizationName("singbox-outbound-updater")
+    app.setOrganizationName("SingRoute")
     app.setStyle("Fusion")
     window = MainWindow()
     window.show()

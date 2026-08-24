@@ -1,86 +1,79 @@
-# sing-box Outbound Updater
+# SingRoute
 
-Portable Windows-приложение для безопасного обновления proxy outbound в
-sing-box на роутерах OpenWrt. Источники конфигурации первой версии — HAPP и
-NekoBox.
+[English](README.md) | [Русский](README_RU.md)
 
-## Что делает приложение
+Safe portable Windows application for synchronizing proxy outbounds from HAPP
+or NekoBox exports with a sing-box configuration on an OpenWrt router.
 
-1. Подключается к OpenWrt по SSH и сохраняет сессию для следующих действий.
-2. Принимает JSON кнопкой вставки из буфера или загружает содержимое файла
-   HAPP/NekoBox в окно просмотра.
-3. Преобразует поддерживаемый outbound в формат sing-box.
-4. Показывает старый и новый outbound, скрывая пароли, UUID и ключи.
-5. Проверяет временный конфиг командой `sing-box check`.
-6. После успешной проверки создаёт временную резервную копию на роутере.
-7. Атомарно устанавливает конфиг и перезапускает службу OpenWrt.
-8. После проверки работоспособности удаляет резервную копию. При неудачном
-   запуске автоматически восстанавливает старый конфиг и также удаляет копию;
-   она сохраняется только при неудачном откате для ручного восстановления.
+> SingRoute is an independent, unofficial project. It is not affiliated with,
+> sponsored by, or endorsed by SagerNet or the sing-box project. sing-box is
+> referenced only to describe compatibility.
 
-Поддерживаются нативные outbounds sing-box, HAPP/Xray VLESS Reality TCP и
-HAPP Hysteria2.
+## Features
 
-## Portable-режим
+1. Connects to OpenWrt over SSH and keeps the session for subsequent actions.
+2. Imports JSON from the clipboard or a HAPP/NekoBox configuration file.
+3. Converts a supported proxy outbound to the sing-box format.
+4. Shows the current and proposed outbound while masking passwords, UUIDs, and
+   private keys.
+5. Validates a temporary configuration with `sing-box check`.
+6. Creates a temporary backup on the router after validation succeeds.
+7. Installs the configuration atomically and restarts the OpenWrt service.
+8. Verifies the service and automatically rolls back on failure.
 
-Пользователю нужен только файл:
+SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP,
+and HAPP Hysteria2.
 
-```text
-singbox-outbound-updater.exe
-```
+## Portable usage
 
-Установка Python и установка самого приложения не требуются. После первого
-сохранения настроек рядом с EXE создаётся файл:
+Download and run the single file:
 
 ```text
-singbox-outbound-updater.ini
+SingRoute.exe
 ```
 
-По умолчанию используются:
+Python and an installer are not required. After settings are saved, SingRoute
+creates this file next to the executable:
 
-- адрес `192.168.1.1`;
-- SSH-пользователь `root`;
-- порт `22`;
-- конфиг `/etc/sing-box/config.json`;
-- служба `/etc/init.d/sing-box`.
+```text
+SingRoute.ini
+```
 
-Изменённые поля сохраняются в INI для следующих запусков.
-Текст импортированного конфига не сохраняется, поскольку содержит секреты.
+When upgrading from `v0.1.0`, SingRoute automatically reads the legacy
+`singbox-outbound-updater.ini` file and migrates stored Windows credentials when
+they are first used. Imported configuration text is never persisted because it
+may contain secrets.
 
-Основная строка подключения содержит только адрес, пользователя, пароль и
-флажок сохранения. SSH-порт, способ авторизации, приватный ключ, путь к конфигу
-и имя службы находятся в дополнительных настройках под кнопкой-шестерёнкой.
+Default connection settings:
 
-После первого успешного подключения можно включить автоматическое подключение
-при следующих запусках. Сразу после подключения приложение показывает текущий
-outbound роутера слева, даже если исходный конфиг ещё не загружен. Если исходный
-конфиг уже есть, полное сравнение готовится сразу; если он добавлен позже — после
-вставки или выбора файла. Ручное редактирование исходного текста не предусмотрено.
+- router: `192.168.1.1`;
+- SSH user: `root`;
+- SSH port: `22`;
+- configuration: `/etc/sing-box/config.json`;
+- service: `/etc/init.d/sing-box`.
 
-Блок сравнения занимает свободную высоту окна. Журнал скрыт по умолчанию,
-раскрывается при ошибке или вручную флажком «Показать журнал».
+The main connection row contains the address, user, password, and password
+storage option. SSH port, authentication mode, private key, configuration path,
+and service name are available under advanced settings.
 
-## SSH и безопасность
+## SSH and safety
 
-Автоматический режим последовательно использует SSH-agent, стандартные ключи
-из `%USERPROFILE%\.ssh`, `IdentityFile` из SSH config и введённый пароль.
-Нестандартный приватный ключ можно выбрать вручную; приложение его не копирует.
+Automatic authentication tries SSH agent keys, standard keys from
+`%USERPROFILE%\.ssh`, `IdentityFile` entries from SSH config, and finally the
+entered password. A custom private key can be selected without copying it.
 
-Пароль и passphrase никогда не записываются в INI. Поле пароля при запуске
-остаётся пустым. Если включён флажок сохранения, секрет хранится в Windows
-Credential Manager и привязывается к пользователю, адресу и порту роутера.
+Passwords and key passphrases are never written to the INI file. With password
+storage enabled, the password is kept in Windows Credential Manager and scoped
+to the router user, address, and port.
 
-Неизвестный SSH host key требует явного подтверждения fingerprint. Подтверждённый
-публичный ключ сохраняется в INI; изменение ключа блокирует подключение.
+An unknown SSH host key requires explicit fingerprint confirmation. The
+confirmed public key is stored in the INI file; a later key change blocks the
+connection. Remote commands use timeouts. Configuration installation cannot be
+cancelled halfway through, preserving the automatic rollback path.
 
-Проверку подключения и подготовку превью можно отменить. Каждая удалённая
-команда имеет ограничение времени ответа, поэтому недоступный Dropbear/OpenWrt
-не должен навсегда блокировать окно. Применение конфига после подтверждения не
-прерывается посередине, чтобы сохранить возможность безопасного отката.
+## Development
 
-## Разработка
-
-Требуется Python 3.11–3.14 и Poetry.
+SingRoute requires Python 3.11–3.14 and Poetry.
 
 ```powershell
 poetry config virtualenvs.in-project true --local
@@ -89,28 +82,33 @@ poetry run pytest
 poetry run python main.py
 ```
 
-## Сборка одного EXE
+## Build
 
 ```powershell
 .\build.ps1
 ```
 
-Результат:
+The portable executable is written to:
 
 ```text
-dist\singbox-outbound-updater.exe
+dist\SingRoute.exe
 ```
 
-## Выпуск версии
+## Release
 
-Версия задаётся в `pyproject.toml`. Для публикации релиза создайте тег с той же
-версией и отправьте его в GitHub:
+The project version is defined in `pyproject.toml`. Create and push a matching
+tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin v0.2.0
 ```
 
-Workflow `Release` проверит метаданные и тесты на Windows, соберёт portable EXE,
-создаст SHA-256 и опубликует оба файла в GitHub Releases. Если тег не совпадает с
-версией проекта, сборка завершится ошибкой до публикации.
+The `Release` workflow validates the metadata, runs the Windows test suite,
+builds `SingRoute.exe`, generates its SHA-256 checksum and build attestation,
+and publishes the files to GitHub Releases. A tag that does not match the
+project version fails before publication.
+
+## License
+
+SingRoute is available under the [MIT License](LICENSE).

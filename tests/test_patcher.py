@@ -1,7 +1,7 @@
 import pytest
 
-from singbox_outbound_updater.core.errors import ConfigPatchError
-from singbox_outbound_updater.core.patcher import (
+from singroute.core.errors import ConfigPatchError
+from singroute.core.patcher import (
     patch_router_config,
     select_exported_outbound,
 )

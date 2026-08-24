@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SERVICE_NAME = "singbox-outbound-updater"
+SERVICE_NAME = "SingRoute"
+LEGACY_SERVICE_NAME = "singbox-outbound-updater"
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,21 @@ class CredentialStore:
         self._backend = backend
 
     def get_password(self, target: CredentialTarget) -> str | None:
-        return self._backend.get_password(SERVICE_NAME, target.key)
+        password = self._backend.get_password(SERVICE_NAME, target.key)
+        if password is not None:
+            return password
+
+        legacy_password = self._backend.get_password(LEGACY_SERVICE_NAME, target.key)
+        if legacy_password is None:
+            return None
+
+        try:
+            self._backend.set_password(SERVICE_NAME, target.key, legacy_password)
+            self._delete_password(LEGACY_SERVICE_NAME, target)
+        except Exception:
+            # Reading a saved password must still work if migration is unavailable.
+            pass
+        return legacy_password
 
     def set_password(self, target: CredentialTarget, password: str) -> None:
         if not password:
@@ -40,8 +55,12 @@ class CredentialStore:
         self._backend.set_password(SERVICE_NAME, target.key, password)
 
     def delete_password(self, target: CredentialTarget) -> None:
+        self._delete_password(SERVICE_NAME, target)
+        self._delete_password(LEGACY_SERVICE_NAME, target)
+
+    def _delete_password(self, service_name: str, target: CredentialTarget) -> None:
         try:
-            self._backend.delete_password(SERVICE_NAME, target.key)
+            self._backend.delete_password(service_name, target.key)
         except Exception as error:
             if error.__class__.__name__ not in {"PasswordDeleteError", "KeyringError"}:
                 raise

@@ -10,16 +10,16 @@ from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from singbox_outbound_updater.application.router_client import CommandResult
-from singbox_outbound_updater.application.router_update import (
+from singroute.application.router_client import CommandResult
+from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
 )
-from singbox_outbound_updater.gui.main_window import MainWindow, _ask_yes_no
-from singbox_outbound_updater.gui.main_window import ConnectedRouter
-from singbox_outbound_updater.application.router_connection import RouterInfo
-from singbox_outbound_updater.infrastructure.settings import PortableSettingsStore
-from singbox_outbound_updater.infrastructure.ssh_router import SshRouterClient
+from singroute.gui.main_window import MainWindow, _ask_yes_no
+from singroute.gui.main_window import ConnectedRouter
+from singroute.application.router_connection import RouterInfo
+from singroute.infrastructure.settings import PortableSettingsStore
+from singroute.infrastructure.ssh_router import SshRouterClient
 
 
 def test_worker_result_is_delivered_back_to_gui_thread(tmp_path: Path):

@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from singbox_outbound_updater.application.operation import prepare_config_update
-from singbox_outbound_updater.core.converters import normalize_outbound_to_singbox
-from singbox_outbound_updater.core.errors import ConfigPatchError
+from singroute.application.operation import prepare_config_update
+from singroute.core.converters import normalize_outbound_to_singbox
+from singroute.core.errors import ConfigPatchError
 
 
 def test_singbox_outbound_is_returned_as_deep_copy():

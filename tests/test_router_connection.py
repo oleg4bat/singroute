@@ -4,11 +4,11 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from singbox_outbound_updater.application.router_connection import (
+from singroute.application.router_connection import (
     RouterCompatibilityError,
     inspect_router,
 )
-from singbox_outbound_updater.application.router_client import CommandResult
+from singroute.application.router_client import CommandResult
 
 
 def test_inspect_router_returns_release_and_binary_and_reports_progress():

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from singbox_outbound_updater.application.operation import prepare_config_update
+from singroute.application.operation import prepare_config_update
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"

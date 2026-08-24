@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from singbox_outbound_updater.core.errors import ConfigPatchError
+from singroute.core.errors import ConfigPatchError
 
 
 def normalize_outbound_to_singbox(outbound: dict[str, Any]) -> dict[str, Any]:
