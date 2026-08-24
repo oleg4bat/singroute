@@ -20,6 +20,8 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 6. Creates a temporary backup on the router after validation succeeds.
 7. Installs the configuration atomically and restarts the OpenWrt service.
 8. Verifies the service and automatically rolls back on failure.
+9. Checks for new SingRoute releases, verifies SHA-256, and safely replaces the
+   portable executable before restarting it.
 
 SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP,
 and HAPP Hysteria2.
@@ -43,6 +45,21 @@ When upgrading from `v0.1.0`, SingRoute automatically reads the legacy
 `singbox-outbound-updater.ini` file and migrates stored Windows credentials when
 they are first used. Imported configuration text is never persisted because it
 may contain secrets.
+
+## Updating SingRoute
+
+By default, SingRoute checks the official latest GitHub release at startup.
+Startup checks can be disabled in advanced settings, and a manual check remains
+available from the button at the top of the main window.
+
+Before installation, the application downloads `SingRoute.exe` and
+`SingRoute.exe.sha256` only from the official repository and verifies SHA-256.
+The running executable is replaced only after SingRoute exits; `SingRoute.ini`
+is preserved.
+
+`v0.3.0` is the first release with the built-in updater, so upgrading from
+`v0.2.0` requires one final manual download. Later releases can be installed
+from within the application.
 
 Default connection settings:
 
@@ -100,8 +117,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.2.0 -m "Release v0.2.0"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin v0.3.0
 ```
 
 The `Release` workflow validates the metadata, runs the Windows test suite,

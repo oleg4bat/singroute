@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -53,6 +54,10 @@ class AdvancedSettingsDialog(QDialog):
 
         self.config_path_edit = QLineEdit(settings.config_path)
         self.service_name_edit = QLineEdit(settings.service_name)
+        self.check_updates_on_startup = QCheckBox(
+            "Проверять обновления SingRoute при запуске"
+        )
+        self.check_updates_on_startup.setChecked(settings.check_updates_on_startup)
 
         form = QFormLayout()
         form.addRow("SSH-порт", self.port_spin)
@@ -60,6 +65,7 @@ class AdvancedSettingsDialog(QDialog):
         form.addRow("Приватный SSH-ключ", identity_widget)
         form.addRow("Конфиг на роутере", self.config_path_edit)
         form.addRow("Служба OpenWrt", self.service_name_edit)
+        form.addRow("Обновления", self.check_updates_on_startup)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -80,6 +86,7 @@ class AdvancedSettingsDialog(QDialog):
         settings.identity_file = self.identity_edit.text().strip()
         settings.config_path = self.config_path_edit.text().strip()
         settings.service_name = self.service_name_edit.text().strip()
+        settings.check_updates_on_startup = self.check_updates_on_startup.isChecked()
 
     def _browse_identity(self) -> None:
         start = self.identity_edit.text().strip() or str(Path.home() / ".ssh")

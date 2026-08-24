@@ -32,6 +32,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from singroute import __version__
+from singroute.application.app_update import (
+    ReleaseInfo,
+    StagedUpdate,
+    UpdateCheckResult,
+    check_for_update,
+    current_executable_path,
+    is_portable_windows_build,
+    launch_staged_update,
+    stage_update,
+)
 from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
@@ -87,7 +98,10 @@ class MainWindow(QMainWindow):
         self._active_client: SshRouterClient | None = None
         self._connected_client: SshRouterClient | None = None
         self._active_worker: Worker | None = None
+        self._background_update_worker: Worker | None = None
         self._success_handler: Callable[[object], None] | None = None
+        self._available_release: ReleaseInfo | None = None
+        self._status_before_app_update = ""
         self._busy = False
         self._operation_cancellable = False
 
@@ -102,6 +116,8 @@ class MainWindow(QMainWindow):
         self.operation_progress.connect(self._on_operation_progress)
         if self.settings.auto_connect:
             QTimer.singleShot(0, self._connect_router)
+        if self.settings.check_updates_on_startup and is_portable_windows_build():
+            QTimer.singleShot(1200, self._check_startup_update_when_idle)
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -121,11 +137,20 @@ class MainWindow(QMainWindow):
         header_text.addWidget(subtitle)
         self.advanced_button = QToolButton()
         self.advanced_button.setText("⚙")
-        self.advanced_button.setToolTip("Дополнительные настройки подключения")
+        self.advanced_button.setToolTip("Дополнительные настройки")
         self.advanced_button.setObjectName("gearButton")
         self.advanced_button.setFixedSize(28, 28)
         self.advanced_button.clicked.connect(self._open_advanced_settings)
         header.addLayout(header_text, 1)
+        self.version_label = QLabel(f"v{__version__}")
+        self.version_label.setObjectName("mutedLabel")
+        self.app_update_button = QPushButton("Проверить обновления")
+        self.app_update_button.setToolTip("Проверить новые версии SingRoute")
+        self.app_update_button.clicked.connect(
+            lambda: self._check_app_update(silent=False)
+        )
+        header.addWidget(self.version_label)
+        header.addWidget(self.app_update_button)
         root.addLayout(header)
 
         self.source_group = QGroupBox("2. Исходный конфиг HAPP / NekoBox")
@@ -350,6 +375,120 @@ class MainWindow(QMainWindow):
         self.connection_hint.setText(self._advanced_summary())
         self._invalidate_preview()
         self._save_settings()
+
+    def _check_startup_update_when_idle(self) -> None:
+        self._check_app_update(silent=True)
+
+    def _check_app_update(self, *, silent: bool) -> None:
+        if silent:
+            if self._background_update_worker is not None:
+                return
+            worker = Worker(lambda: check_for_update(__version__))
+            self._background_update_worker = worker
+            worker.signals.finished.connect(self._background_update_check_finished)
+            worker.signals.failed.connect(self._background_update_check_failed)
+            self.thread_pool.start(worker)
+            return
+        if self._busy:
+            QMessageBox.information(
+                self,
+                "Обновление SingRoute",
+                "Дождитесь завершения текущей операции и повторите проверку.",
+            )
+            return
+        if self._available_release is not None:
+            self._offer_app_update(self._available_release)
+            return
+
+        self._status_before_app_update = self.status_label.text()
+        self._run_worker(
+            lambda: check_for_update(__version__),
+            lambda result: self._app_update_check_finished(result, silent=False),
+            "Проверяю обновления SingRoute…",
+            retry=lambda: self._check_app_update(silent=False),
+            cancellable=False,
+        )
+
+    @Slot(object)
+    def _background_update_check_finished(self, result: object) -> None:
+        self._background_update_worker = None
+        try:
+            self._app_update_check_finished(result, silent=True)
+        except Exception as error:
+            self._background_update_check_failed(error)
+
+    @Slot(object)
+    def _background_update_check_failed(self, error: object) -> None:
+        self._background_update_worker = None
+        self._append_log(f"Не удалось проверить обновления: {error}")
+
+    def _app_update_check_finished(self, result: object, *, silent: bool) -> None:
+        if not isinstance(result, UpdateCheckResult):
+            raise TypeError("Некорректный результат проверки обновлений")
+        if result.update_available:
+            self._available_release = result.latest_release
+            self.app_update_button.setText(
+                f"Обновить до v{result.latest_release.version}"
+            )
+            self._append_log(
+                f"Доступно обновление SingRoute v{result.latest_release.version}."
+            )
+            if not silent:
+                self.status_label.setText(
+                    f"Доступно обновление SingRoute v{result.latest_release.version}"
+                )
+                self._offer_app_update(result.latest_release)
+            return
+
+        if not silent:
+            self.status_label.setText(self._status_before_app_update)
+            QMessageBox.information(
+                self,
+                "Обновление SingRoute",
+                f"Установлена актуальная версия SingRoute v{__version__}.",
+            )
+
+    def _offer_app_update(self, release: ReleaseInfo) -> None:
+        if not is_portable_windows_build():
+            QMessageBox.information(
+                self,
+                "Доступно обновление SingRoute",
+                f"Доступна версия v{release.version}. Автоматическая установка "
+                "работает в portable SingRoute.exe; среда разработки не изменена.",
+            )
+            return
+        answer = _ask_yes_no(
+            self,
+            "Доступно обновление SingRoute",
+            f"Доступна версия v{release.version}.\n\n"
+            "Загрузить её, проверить SHA-256 и установить? После загрузки "
+            "SingRoute закроется и запустится заново.",
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._download_app_update(release)
+
+    def _download_app_update(self, release: ReleaseInfo) -> None:
+        self._run_worker(
+            lambda: stage_update(release, current_executable_path()),
+            self._app_update_downloaded,
+            f"Загружаю SingRoute v{release.version}…",
+            retry=lambda: self._download_app_update(release),
+            cancellable=False,
+        )
+
+    def _app_update_downloaded(self, result: object) -> None:
+        if not isinstance(result, StagedUpdate):
+            raise TypeError("Некорректный результат загрузки обновления")
+        launch_staged_update(result)
+        self._append_log(
+            f"Обновление v{result.release.version} проверено; перезапускаю SingRoute."
+        )
+        application = QApplication.instance()
+        if application is None:
+            raise RuntimeError("Экземпляр приложения не найден")
+        application.quit()
 
     def _connection_fields_changed(self) -> None:
         if self._connected_client is not None:
@@ -740,6 +879,7 @@ class MainWindow(QMainWindow):
         self.source_group.setEnabled(not busy)
         self.connection_group.setEnabled(not busy)
         self.advanced_button.setEnabled(not busy)
+        self.app_update_button.setEnabled(not busy)
         self.cancel_button.setVisible(busy and self._operation_cancellable)
         self.cancel_button.setEnabled(busy and self._operation_cancellable)
         self.apply_button.setEnabled(
@@ -828,6 +968,7 @@ class MainWindow(QMainWindow):
             identity_file=self.settings.identity_file,
             remember_password=self.remember_password_check.isChecked(),
             auto_connect=self.settings.auto_connect,
+            check_updates_on_startup=self.settings.check_updates_on_startup,
             last_import_directory=self.settings.last_import_directory,
             window_width=self.width(),
             window_height=self.height(),

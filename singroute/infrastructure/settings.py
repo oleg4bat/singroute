@@ -30,6 +30,7 @@ class AppSettings:
     identity_file: str = ""
     remember_password: bool = False
     auto_connect: bool = False
+    check_updates_on_startup: bool = True
     last_import_directory: str = ""
     window_width: int = 960
     window_height: int = 720
@@ -82,6 +83,9 @@ class PortableSettingsStore:
             connection, "remember_password", False
         )
         settings.auto_connect = _boolean(connection, "auto_connect", False)
+        settings.check_updates_on_startup = _boolean(
+            application, "check_updates_on_startup", True
+        )
 
         settings.last_import_directory = _text(
             application, "last_import_directory", ""
@@ -111,6 +115,7 @@ class PortableSettingsStore:
             "auto_connect": str(settings.auto_connect).lower(),
         }
         parser["application"] = {
+            "check_updates_on_startup": str(settings.check_updates_on_startup).lower(),
             "last_import_directory": settings.last_import_directory,
             "window_width": str(settings.window_width),
             "window_height": str(settings.window_height),

@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEventLoop, Qt, QTimer
@@ -11,6 +13,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from singroute.application.router_client import CommandResult
+from singroute.application.app_update import ReleaseInfo, UpdateCheckResult
 from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
@@ -20,6 +23,7 @@ from singroute.gui.main_window import ConnectedRouter
 from singroute.application.router_connection import RouterInfo
 from singroute.infrastructure.settings import PortableSettingsStore
 from singroute.infrastructure.ssh_router import SshRouterClient
+import singroute.gui.main_window as main_window_module
 
 
 def test_worker_result_is_delivered_back_to_gui_thread(tmp_path: Path):
@@ -271,5 +275,84 @@ def test_yes_no_question_uses_russian_button_labels(tmp_path: Path, monkeypatch)
 
     assert answer == QMessageBox.StandardButton.Yes
     assert captured == {"yes": "Да", "no": "Нет"}
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_background_update_check_marks_available_version_without_dialog(
+    tmp_path: Path,
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    downloads: list[ReleaseInfo] = []
+    window._download_app_update = downloads.append  # type: ignore[method-assign]
+    release = ReleaseInfo(
+        version="0.4.0",
+        tag="v0.4.0",
+        page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.4.0",
+        executable_url=(
+            "https://github.com/oleg4bat/singroute/releases/download/"
+            "v0.4.0/SingRoute.exe"
+        ),
+        checksum_url=(
+            "https://github.com/oleg4bat/singroute/releases/download/"
+            "v0.4.0/SingRoute.exe.sha256"
+        ),
+    )
+
+    window._app_update_check_finished(
+        UpdateCheckResult("0.3.0", release, update_available=True),
+        silent=True,
+    )
+
+    assert window.app_update_button.text() == "Обновить до v0.4.0"
+    assert "Доступно обновление SingRoute v0.4.0" in window.log_edit.toPlainText()
+    assert downloads == []
+    window.deleteLater()
+    app.processEvents()
+
+
+@pytest.mark.parametrize(
+    ("answer", "should_download"),
+    [
+        (QMessageBox.StandardButton.No, False),
+        (QMessageBox.StandardButton.Yes, True),
+    ],
+)
+def test_update_download_requires_explicit_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+    answer: QMessageBox.StandardButton,
+    should_download: bool,
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    release = ReleaseInfo(
+        version="0.4.0",
+        tag="v0.4.0",
+        page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.4.0",
+        executable_url=(
+            "https://github.com/oleg4bat/singroute/releases/download/"
+            "v0.4.0/SingRoute.exe"
+        ),
+        checksum_url=(
+            "https://github.com/oleg4bat/singroute/releases/download/"
+            "v0.4.0/SingRoute.exe.sha256"
+        ),
+    )
+    downloads: list[ReleaseInfo] = []
+    window._download_app_update = downloads.append  # type: ignore[method-assign]
+    monkeypatch.setattr(main_window_module, "is_portable_windows_build", lambda: True)
+    monkeypatch.setattr(main_window_module, "_ask_yes_no", lambda *args: answer)
+
+    window._offer_app_update(release)
+
+    assert downloads == ([release] if should_download else [])
     window.deleteLater()
     app.processEvents()
