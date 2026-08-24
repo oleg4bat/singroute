@@ -100,3 +100,17 @@ poetry run python main.py
 ```text
 dist\singbox-outbound-updater.exe
 ```
+
+## Выпуск версии
+
+Версия задаётся в `pyproject.toml`. Для публикации релиза создайте тег с той же
+версией и отправьте его в GitHub:
+
+```powershell
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+Workflow `Release` проверит метаданные и тесты на Windows, соберёт portable EXE,
+создаст SHA-256 и опубликует оба файла в GitHub Releases. Если тег не совпадает с
+версией проекта, сборка завершится ошибкой до публикации.
