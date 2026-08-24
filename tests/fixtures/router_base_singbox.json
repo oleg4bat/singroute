@@ -1,0 +1,55 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "router-cloudflare",
+        "address": "1.1.1.1"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "router-mixed",
+      "listen": "127.0.0.1",
+      "listen_port": 2080
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "inbound": "router-mixed",
+        "outbound": "router-proxy"
+      }
+    ]
+  },
+  "routing": {
+    "domainStrategy": "AsIs"
+  },
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "router-proxy",
+      "server": "old-router.example.test",
+      "server_port": 443,
+      "uuid": "TEST-OLD-ROUTER-UUID",
+      "password": "TEST-OLD-ROUTER-PASSWORD",
+      "tls": {
+        "enabled": true,
+        "server_name": "old-router.example.test",
+        "private_key": "TEST-OLD-PRIVATE-KEY"
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "router-direct"
+    },
+    {
+      "type": "block",
+      "tag": "router-block"
+    }
+  ]
+}

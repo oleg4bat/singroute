@@ -1,0 +1,49 @@
+{
+  "remarks": "test HAPP VLESS Reality export 1",
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "happ-vless-1.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "TEST-HAPP-VLESS-UUID-1",
+                "flow": "xtls-rprx-vision",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "allowInsecure": false,
+          "fingerprint": "firefox",
+          "publicKey": "TEST-HAPP-PUBLIC-KEY-1",
+          "serverName": "reality-1.example.test",
+          "shortId": "TESTSHORTID1",
+          "spiderX": "/"
+        },
+        "tcpSettings": {
+          "header": {
+            "type": "none"
+          }
+        }
+      },
+      "tag": "source-proxy"
+    },
+    {
+      "protocol": "freedom",
+      "tag": "source-direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "source-block"
+    }
+  ]
+}

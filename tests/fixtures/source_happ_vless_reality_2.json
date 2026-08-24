@@ -1,0 +1,79 @@
+{
+  "dns": {
+    "servers": [
+      "8.8.8.8"
+    ]
+  },
+  "inbounds": [
+    {
+      "port": 1080,
+      "protocol": "socks",
+      "tag": "source-socks"
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "outboundTag": "source-proxy"
+      }
+    ]
+  },
+  "policy": {
+    "levels": {
+      "0": {
+        "handshake": 4
+      }
+    }
+  },
+  "metrics": {
+    "tag": "source-metrics"
+  },
+  "remarks": "test HAPP VLESS Reality export 2",
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "happ-vless-2.example.test",
+            "port": 9443,
+            "users": [
+              {
+                "id": "TEST-HAPP-VLESS-UUID-2",
+                "flow": "xtls-rprx-vision",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "allowInsecure": false,
+          "fingerprint": "chrome",
+          "publicKey": "TEST-HAPP-PUBLIC-KEY-2",
+          "serverName": "reality-2.example.test",
+          "shortId": "TESTSHORTID2",
+          "spiderX": "/test"
+        },
+        "tcpSettings": {
+          "header": {
+            "type": "none"
+          }
+        }
+      },
+      "tag": "source-proxy"
+    },
+    {
+      "protocol": "freedom",
+      "tag": "source-direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "source-block"
+    }
+  ]
+}

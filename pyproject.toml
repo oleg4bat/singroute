@@ -1,0 +1,26 @@
+[project]
+name = "singbox-outbound-updater"
+version = "0.1.0"
+description = "Portable Windows GUI for updating sing-box outbounds on OpenWrt routers."
+authors = [{ name = "singbox-outbound-updater contributors" }]
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "pyside6>=6.11.2,<7.0.0",
+    "paramiko>=5.0.0,<6.0.0",
+    "keyring>=25.7.0,<26.0.0",
+]
+
+[tool.poetry]
+packages = [{ include = "singbox_outbound_updater" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pyinstaller = "^6.22.2"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

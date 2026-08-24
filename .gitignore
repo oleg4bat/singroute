@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+dist/
+build/
+*.egg-info/
+*.spec
+exported.json
+router.json
+result.json
+singbox-outbound-updater.ini

@@ -1,0 +1,21 @@
+{
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "source-proxy",
+      "server": "source-singbox-vless.example.test",
+      "server_port": 8443,
+      "uuid": "TEST-SINGBOX-VLESS-UUID",
+      "network": "tcp",
+      "tls": {
+        "enabled": true,
+        "server_name": "source-singbox-vless.example.test",
+        "reality": {
+          "enabled": true,
+          "public_key": "TEST-SINGBOX-PUBLIC-KEY",
+          "short_id": "TESTSINGBOXSHORTID"
+        }
+      }
+    }
+  ]
+}
