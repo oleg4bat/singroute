@@ -355,15 +355,24 @@ def test_update_page_requires_explicit_confirmation(
         page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.4.0",
     )
     opened: list[str] = []
+    prompts: list[str] = []
     monkeypatch.setattr(
         main_window_module.QDesktopServices,
         "openUrl",
         lambda url: opened.append(url.toString()) or True,
     )
-    monkeypatch.setattr(main_window_module, "_ask_yes_no", lambda *args: answer)
+    def ask_yes_no(*args):
+        prompts.append(args[2])
+        return answer
+
+    monkeypatch.setattr(main_window_module, "_ask_yes_no", ask_yes_no)
 
     window._offer_app_update(release)
 
     assert opened == ([release.page_url] if should_open else [])
+    assert len(prompts) == 1
+    assert "SHA" not in prompts[0]
+    assert "контрольн" not in prompts[0]
+    assert "официальную страницу релиза" in prompts[0]
     window.deleteLater()
     app.processEvents()

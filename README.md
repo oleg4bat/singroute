@@ -55,6 +55,9 @@ executable and its checksum from the same download channel, SingRoute does not
 download or execute updates automatically. It opens the exact official release
 page and leaves installation under user control.
 
+Version 0.3.2 fixes checksum line-ending compatibility for the one-time upgrade
+started by the legacy 0.3.0 updater.
+
 Default connection settings:
 
 - router: `192.168.1.1`;
@@ -121,8 +124,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.3.1 -m "Release v0.3.1"
-git push origin v0.3.1
+git tag -a v0.3.2 -m "Release v0.3.2"
+git push origin v0.3.2
 ```
 
 The `Release` workflow validates the metadata, audits Python dependencies, runs

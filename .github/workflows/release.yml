@@ -54,11 +54,7 @@ jobs:
         run: .\build.ps1
 
       - name: Create SHA-256 checksum
-        shell: pwsh
-        run: |
-          $asset = "dist/SingRoute.exe"
-          $digest = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$digest  SingRoute.exe" | Set-Content -Encoding ascii "${asset}.sha256"
+        run: poetry run python scripts/create_release_checksum.py dist/SingRoute.exe
 
       - name: Attest release binary
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1

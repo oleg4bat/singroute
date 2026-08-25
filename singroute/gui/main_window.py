@@ -470,9 +470,7 @@ class MainWindow(QMainWindow):
             self,
             "Доступно обновление SingRoute",
             f"Доступна версия v{release.version}.\n\n"
-            "Из соображений безопасности SingRoute не запускает загруженные "
-            "программы автоматически. Открыть официальную страницу релиза "
-            "для скачивания и проверки файла?",
+            "Открыть официальную страницу релиза для скачивания?",
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:

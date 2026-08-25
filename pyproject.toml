@@ -1,6 +1,6 @@
 [project]
 name = "singroute"
-version = "0.3.1"
+version = "0.3.2"
 description = "Safe portable Windows GUI for synchronizing sing-box outbounds on OpenWrt routers."
 authors = [{ name = "SingRoute contributors" }]
 readme = "README.md"
