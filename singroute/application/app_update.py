@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 import hashlib
 import json
@@ -12,6 +13,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, BinaryIO
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -23,6 +25,7 @@ CHECKSUM_ASSET_NAME = "SingRoute.exe.sha256"
 MAX_METADATA_BYTES = 1_048_576
 MAX_EXECUTABLE_BYTES = 250 * 1_048_576
 REQUEST_TIMEOUT_SECONDS = 15
+HELPER_START_TIMEOUT_SECONDS = 5
 _VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 _DIGEST_PATTERN = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
 _CHECKSUM_PATTERN = re.compile(
@@ -146,7 +149,7 @@ def stage_update(
 
 
 def launch_staged_update(staged: StagedUpdate, process_id: int | None = None) -> None:
-    """Launch a detached helper that replaces the EXE after all locks disappear."""
+    """Launch a helper that replaces the EXE after all locks disappear."""
     if sys.platform != "win32":
         raise AppUpdateError("Автоматическая установка поддерживается только в Windows.")
     expected_staged_path = staged.target_path.with_name(
@@ -165,12 +168,14 @@ def launch_staged_update(staged: StagedUpdate, process_id: int | None = None) ->
 
     backup_path = _backup_path(staged.target_path)
     error_path = _error_path(staged.target_path)
+    ready_path = staged.target_path.with_name(".SingRoute.update-ready")
     if backup_path.exists():
         raise AppUpdateError(
             f"Обнаружена резервная копия прошлого обновления: {backup_path}. "
             "Проверьте её перед повторной установкой."
         )
     error_path.unlink(missing_ok=True)
+    ready_path.unlink(missing_ok=True)
     script_path = _write_installer_script()
     command = [
         str(_powershell_executable()),
@@ -193,23 +198,55 @@ def launch_staged_update(staged: StagedUpdate, process_id: int | None = None) ->
         str(backup_path),
         "-ErrorPath",
         str(error_path),
+        "-ReadyPath",
+        str(ready_path),
         "-ScriptPath",
         str(script_path),
     ]
     try:
-        subprocess.Popen(
+        helper_process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
-            creationflags=subprocess.CREATE_NO_WINDOW
-            | subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NEW_PROCESS_GROUP,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except OSError as error:
-        script_path.unlink(missing_ok=True)
+        with suppress(OSError):
+            script_path.unlink(missing_ok=True)
         raise AppUpdateError(f"Не удалось запустить установщик обновления: {error}") from error
+
+    deadline = time.monotonic() + HELPER_START_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if ready_path.is_file():
+            return
+        exit_code = helper_process.poll()
+        if exit_code is not None:
+            with suppress(OSError):
+                script_path.unlink(missing_ok=True)
+            raise AppUpdateError(
+                "Установщик обновления не смог запуститься "
+                f"(код {exit_code}). SingRoute остаётся открытым."
+            )
+        time.sleep(0.05)
+
+    with suppress(OSError):
+        helper_process.terminate()
+    try:
+        helper_process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        with suppress(OSError):
+            helper_process.kill()
+        helper_process.wait(timeout=2)
+    with suppress(OSError):
+        ready_path.unlink(missing_ok=True)
+    with suppress(OSError):
+        script_path.unlink(missing_ok=True)
+    raise AppUpdateError(
+        "Установщик обновления не подтвердил запуск. "
+        "SingRoute остаётся открытым."
+    )
 
 
 def is_portable_windows_build() -> bool:
@@ -401,9 +438,11 @@ _INSTALLER_SCRIPT = r'''param(
     [Parameter(Mandatory=$true)][string]$TargetPath,
     [Parameter(Mandatory=$true)][string]$BackupPath,
     [Parameter(Mandatory=$true)][string]$ErrorPath,
+    [Parameter(Mandatory=$true)][string]$ReadyPath,
     [Parameter(Mandatory=$true)][string]$ScriptPath
 )
 $ErrorActionPreference = "Stop"
+[System.IO.File]::WriteAllText($ReadyPath, "ready")
 
 function Move-WithRetry {
     param(
@@ -486,6 +525,7 @@ catch {
     exit 1
 }
 finally {
+    Remove-Item -Force -LiteralPath $ReadyPath -ErrorAction SilentlyContinue
     Remove-Item -Force -LiteralPath $ScriptPath -ErrorAction SilentlyContinue
 }
 '''

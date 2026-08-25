@@ -55,10 +55,12 @@ confirmation, the portable build downloads the exact official executable and
 checksum assets. It requires the checksum, GitHub asset digest, and downloaded
 file hash to agree before installation.
 
-The verified file is staged next to `SingRoute.exe`. A detached Windows helper
+The verified file is staged next to `SingRoute.exe`. A background Windows helper
 then closes SingRoute, waits for all PyInstaller file locks to disappear,
 replaces the executable with rollback protection, and starts SingRoute again.
 Version 0.3.3 adds this complete automatic replacement and restart flow.
+Version 0.3.5 fixes helper startup from the frozen application and requires a
+readiness signal before SingRoute closes, preventing silent failed updates.
 
 Default connection settings:
 
@@ -127,8 +129,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.3.4 -m "Release v0.3.4"
-git push origin v0.3.4
+git tag -a v0.3.5 -m "Release v0.3.5"
+git push origin v0.3.5
 ```
 
 The `Release` workflow validates the metadata, audits Python dependencies, runs

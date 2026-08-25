@@ -192,6 +192,7 @@ def test_installer_retries_until_locked_target_can_be_replaced(tmp_path: Path):
     target = tmp_path / "SingRoute.exe"
     backup = tmp_path / ".SingRoute.previous.exe"
     error_path = tmp_path / "SingRoute-update-error.txt"
+    ready_path = tmp_path / ".SingRoute.update-ready"
     shutil.copy2(source_executable, staged)
     target.write_bytes(b"MZold executable")
     expected_digest = hashlib.sha256(staged.read_bytes()).hexdigest()
@@ -262,6 +263,8 @@ finally {
             str(backup),
             "-ErrorPath",
             str(error_path),
+            "-ReadyPath",
+            str(ready_path),
             "-ScriptPath",
             str(script),
         ],
@@ -278,6 +281,70 @@ finally {
     assert staged.exists() is False
     assert backup.exists() is False
     assert error_path.exists() is False
+    assert ready_path.exists() is False
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == expected_digest
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows updater integration")
+def test_launched_installer_survives_parent_process_exit(tmp_path: Path):
+    source_executable = Path(os.environ["SystemRoot"]) / "System32" / "where.exe"
+    staged = tmp_path / ".SingRoute.update-v0.3.5.exe"
+    target = tmp_path / "SingRoute.exe"
+    backup = tmp_path / ".SingRoute.previous.exe"
+    error_path = tmp_path / "SingRoute-update-error.txt"
+    ready_path = tmp_path / ".SingRoute.update-ready"
+    shutil.copy2(source_executable, staged)
+    target.write_bytes(b"MZold executable")
+    expected_digest = hashlib.sha256(staged.read_bytes()).hexdigest()
+    launcher_code = r'''
+from pathlib import Path
+import sys
+
+from singroute.application.app_update import (
+    ReleaseInfo,
+    StagedUpdate,
+    launch_staged_update,
+)
+
+target = Path(sys.argv[1])
+staged = Path(sys.argv[2])
+digest = sys.argv[3]
+release = ReleaseInfo(
+    version="0.3.5",
+    tag="v0.3.5",
+    page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.3.5",
+    executable_url="https://example.test/SingRoute.exe",
+    checksum_url="https://example.test/SingRoute.exe.sha256",
+    executable_digest=digest,
+)
+launch_staged_update(StagedUpdate(release, staged, target, digest))
+'''
+
+    launcher = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            launcher_code,
+            str(target),
+            str(staged),
+            expected_digest,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if not staged.exists() and not backup.exists() and not ready_path.exists():
+            break
+        time.sleep(0.05)
+
+    assert launcher.returncode == 0, launcher.stderr
+    assert staged.exists() is False
+    assert backup.exists() is False
+    assert error_path.exists() is False
+    assert ready_path.exists() is False
     assert hashlib.sha256(target.read_bytes()).hexdigest() == expected_digest
 
 
