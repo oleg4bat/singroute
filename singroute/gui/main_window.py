@@ -11,8 +11,8 @@ import re
 import threading
 from typing import Any
 
-from PySide6.QtCore import QSignalBlocker, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtCore import QSignalBlocker, QThreadPool, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,14 +35,10 @@ from PySide6.QtWidgets import (
 from singroute import __version__
 from singroute.application.app_update import (
     ReleaseInfo,
-    StagedUpdate,
     UpdateCheckResult,
     check_for_update,
-    current_executable_path,
-    is_portable_windows_build,
-    launch_staged_update,
-    stage_update,
 )
+from singroute.application.operation import MAX_CONFIG_BYTES
 from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
@@ -91,6 +87,11 @@ class MainWindow(QMainWindow):
         self.settings_store = settings_store or PortableSettingsStore()
         self.credential_store = credential_store or CredentialStore()
         self.settings = self.settings_store.load()
+        self._stored_credential_target = (
+            self._credential_target(self.settings)
+            if self.settings.remember_password
+            else None
+        )
         self.thread_pool = QThreadPool.globalInstance()
         self.update_plan: RouterUpdatePlan | None = None
         self._retry_action: Callable[[], None] | None = None
@@ -116,7 +117,7 @@ class MainWindow(QMainWindow):
         self.operation_progress.connect(self._on_operation_progress)
         if self.settings.auto_connect:
             QTimer.singleShot(0, self._connect_router)
-        if self.settings.check_updates_on_startup and is_portable_windows_build():
+        if self.settings.check_updates_on_startup:
             QTimer.singleShot(1200, self._check_startup_update_when_idle)
 
     def _build_ui(self) -> None:
@@ -323,8 +324,13 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
+            if Path(path).stat().st_size > MAX_CONFIG_BYTES:
+                raise ValueError(
+                    "Файл превышает безопасный лимит "
+                    f"{MAX_CONFIG_BYTES // (1024 * 1024)} МиБ."
+                )
             content = Path(path).read_text(encoding="utf-8-sig")
-        except OSError as error:
+        except (OSError, UnicodeError, ValueError) as error:
             QMessageBox.critical(self, "Ошибка файла", str(error))
             return
         self.settings.last_import_directory = str(Path(path).parent)
@@ -338,6 +344,17 @@ class MainWindow(QMainWindow):
             self._set_source_content(text, "Конфиг вставлен из буфера")
 
     def _set_source_content(self, content: str, label: str) -> None:
+        if (
+            len(content) > MAX_CONFIG_BYTES
+            or len(content.encode("utf-8")) > MAX_CONFIG_BYTES
+        ):
+            QMessageBox.warning(
+                self,
+                "Исходный конфиг",
+                "Конфиг превышает безопасный лимит "
+                f"{MAX_CONFIG_BYTES // (1024 * 1024)} МиБ.",
+            )
+            return
         self.source_editor.setPlainText(content)
         self.source_name_label.setText(label)
         self._invalidate_preview()
@@ -428,7 +445,7 @@ class MainWindow(QMainWindow):
         if result.update_available:
             self._available_release = result.latest_release
             self.app_update_button.setText(
-                f"Обновить до v{result.latest_release.version}"
+                f"Открыть релиз v{result.latest_release.version}"
             )
             self._append_log(
                 f"Доступно обновление SingRoute v{result.latest_release.version}."
@@ -449,46 +466,23 @@ class MainWindow(QMainWindow):
             )
 
     def _offer_app_update(self, release: ReleaseInfo) -> None:
-        if not is_portable_windows_build():
-            QMessageBox.information(
-                self,
-                "Доступно обновление SingRoute",
-                f"Доступна версия v{release.version}. Автоматическая установка "
-                "работает в portable SingRoute.exe; среда разработки не изменена.",
-            )
-            return
         answer = _ask_yes_no(
             self,
             "Доступно обновление SingRoute",
             f"Доступна версия v{release.version}.\n\n"
-            "Загрузить её, проверить SHA-256 и установить? После загрузки "
-            "SingRoute закроется и запустится заново.",
-            QMessageBox.StandardButton.Yes,
+            "Из соображений безопасности SingRoute не запускает загруженные "
+            "программы автоматически. Открыть официальную страницу релиза "
+            "для скачивания и проверки файла?",
+            QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._download_app_update(release)
-
-    def _download_app_update(self, release: ReleaseInfo) -> None:
-        self._run_worker(
-            lambda: stage_update(release, current_executable_path()),
-            self._app_update_downloaded,
-            f"Загружаю SingRoute v{release.version}…",
-            retry=lambda: self._download_app_update(release),
-            cancellable=False,
-        )
-
-    def _app_update_downloaded(self, result: object) -> None:
-        if not isinstance(result, StagedUpdate):
-            raise TypeError("Некорректный результат загрузки обновления")
-        launch_staged_update(result)
-        self._append_log(
-            f"Обновление v{result.release.version} проверено; перезапускаю SingRoute."
-        )
-        application = QApplication.instance()
-        if application is None:
-            raise RuntimeError("Экземпляр приложения не найден")
-        application.quit()
+        if not QDesktopServices.openUrl(QUrl(release.page_url)):
+            QMessageBox.warning(
+                self,
+                "Обновление SingRoute",
+                "Не удалось открыть официальную страницу релиза.",
+            )
 
     def _connection_fields_changed(self) -> None:
         if self._connected_client is not None:
@@ -545,7 +539,8 @@ class MainWindow(QMainWindow):
             return
         if not self._validate_fields(require_source=False):
             return
-        self._save_settings()
+        if not self._save_settings():
+            return
 
         def action() -> ConnectedRouter:
             client = self._new_client()
@@ -716,7 +711,8 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         plan = self.update_plan
-        self._save_settings()
+        if not self._save_settings():
+            return
 
         def action() -> RouterUpdateResult:
             self.operation_progress.emit("Начинаю безопасное обновление роутера…")
@@ -921,11 +917,23 @@ class MainWindow(QMainWindow):
         return client
 
     def _validate_fields(self, *, require_source: bool) -> bool:
-        if require_source and not self.source_editor.toPlainText().strip():
+        source_text = self.source_editor.toPlainText()
+        if require_source and not source_text.strip():
             QMessageBox.warning(
                 self,
                 "Исходный конфиг",
                 "Вставьте текст конфига или откройте JSON-файл.",
+            )
+            return False
+        if require_source and (
+            len(source_text) > MAX_CONFIG_BYTES
+            or len(source_text.encode("utf-8")) > MAX_CONFIG_BYTES
+        ):
+            QMessageBox.warning(
+                self,
+                "Исходный конфиг",
+                "Конфиг превышает безопасный лимит "
+                f"{MAX_CONFIG_BYTES // (1024 * 1024)} МиБ.",
             )
             return False
         if not self.host_edit.text().strip():
@@ -975,25 +983,36 @@ class MainWindow(QMainWindow):
             trusted_host_keys=dict(self.settings.trusted_host_keys),
         )
 
-    def _save_settings(self) -> None:
+    def _save_settings(self) -> bool:
         current = self._settings_from_fields()
         target = self._credential_target(current)
+        previous_target = self._stored_credential_target
+        entered_password = self.password_edit.text()
         try:
-            if current.remember_password:
-                entered_password = self.password_edit.text()
-                if entered_password:
-                    self.credential_store.set_password(target, entered_password)
-                    with QSignalBlocker(self.password_edit):
-                        self.password_edit.clear()
-            else:
-                self.credential_store.delete_password(target)
             self.settings_store.save(current)
         except Exception as error:
             self._append_log(f"Настройки не сохранены: {error}")
-        else:
-            self.settings = current
-            self.connection_hint.setText(self._advanced_summary())
-            self._set_password_placeholder()
+            return False
+
+        self.settings = current
+        try:
+            if current.remember_password and entered_password:
+                self.credential_store.set_password(target, entered_password)
+                with QSignalBlocker(self.password_edit):
+                    self.password_edit.clear()
+            elif not current.remember_password:
+                self.credential_store.delete_password(target)
+
+            if previous_target is not None and previous_target != target:
+                self.credential_store.delete_password(previous_target)
+        except Exception as error:
+            self._append_log(f"Не удалось обновить пароль Windows: {error}")
+            return False
+
+        self._stored_credential_target = target if current.remember_password else None
+        self.connection_hint.setText(self._advanced_summary())
+        self._set_password_placeholder()
+        return True
 
     @staticmethod
     def _credential_target(settings: AppSettings) -> CredentialTarget:

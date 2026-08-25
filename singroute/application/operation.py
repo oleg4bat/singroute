@@ -15,6 +15,10 @@ from singroute.core.patcher import (
 from singroute.core.preview import summarize_outbound
 
 
+MAX_CONFIG_BYTES = 8 * 1024 * 1024
+MAX_JSON_DEPTH = 128
+
+
 @dataclass(frozen=True)
 class ConfigUpdate:
     updated_config: dict[str, Any]
@@ -56,6 +60,12 @@ def prepare_config_update(
 
 
 def _loads_config(config_text: str, config_name: str) -> Any:
+    if len(config_text) > MAX_CONFIG_BYTES or len(config_text.encode("utf-8")) > MAX_CONFIG_BYTES:
+        raise ConfigParseError(
+            f"{config_name} exceeds the safe limit of "
+            f"{MAX_CONFIG_BYTES // (1024 * 1024)} MiB"
+        )
+    _validate_json_nesting(config_text, config_name)
     try:
         return json.loads(config_text)
     except json.JSONDecodeError as error:
@@ -63,6 +73,35 @@ def _loads_config(config_text: str, config_name: str) -> Any:
             f"{config_name} contains invalid JSON: line {error.lineno}, "
             f"column {error.colno}"
         ) from error
+    except RecursionError as error:
+        raise ConfigParseError(
+            f"{config_name} contains excessively nested JSON"
+        ) from error
+
+
+def _validate_json_nesting(config_text: str, config_name: str) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in config_text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise ConfigParseError(
+                    f"{config_name} contains excessively nested JSON"
+                )
+        elif character in "]}":
+            depth = max(0, depth - 1)
 
 
 def _get_first_router_outbound(router_config: Any) -> dict[str, Any]:

@@ -20,8 +20,8 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 6. Creates a temporary backup on the router after validation succeeds.
 7. Installs the configuration atomically and restarts the OpenWrt service.
 8. Verifies the service and automatically rolls back on failure.
-9. Checks for new SingRoute releases, verifies SHA-256, and safely replaces the
-   portable executable before restarting it.
+9. Checks for new SingRoute releases and opens the official release page for a
+   user-controlled download.
 
 SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP,
 and HAPP Hysteria2.
@@ -50,16 +50,10 @@ may contain secrets.
 
 By default, SingRoute checks the official latest GitHub release at startup.
 Startup checks can be disabled in advanced settings, and a manual check remains
-available from the button at the top of the main window.
-
-Before installation, the application downloads `SingRoute.exe` and
-`SingRoute.exe.sha256` only from the official repository and verifies SHA-256.
-The running executable is replaced only after SingRoute exits; `SingRoute.ini`
-is preserved.
-
-`v0.3.0` is the first release with the built-in updater, so upgrading from
-`v0.2.0` requires one final manual download. Later releases can be installed
-from within the application.
+available from the button at the top of the main window. To avoid trusting an
+executable and its checksum from the same download channel, SingRoute does not
+download or execute updates automatically. It opens the exact official release
+page and leaves installation under user control.
 
 Default connection settings:
 
@@ -78,15 +72,24 @@ and service name are available under advanced settings.
 Automatic authentication tries SSH agent keys, standard keys from
 `%USERPROFILE%\.ssh`, `IdentityFile` entries from SSH config, and finally the
 entered password. A custom private key can be selected without copying it.
+This is the user's private authentication key and remains on Windows; it is not
+the router host key described below.
 
 Passwords and key passphrases are never written to the INI file. With password
 storage enabled, the password is kept in Windows Credential Manager and scoped
 to the router user, address, and port.
 
-An unknown SSH host key requires explicit fingerprint confirmation. The
-confirmed public key is stored in the INI file; a later key change blocks the
-connection. Remote commands use timeouts. Configuration installation cannot be
-cancelled halfway through, preserving the automatic rollback path.
+An unknown router SSH host key requires explicit fingerprint confirmation. The
+confirmed public key is stored in the INI file and is the application's only
+trust source for that router; a later key change blocks the connection.
+
+Version 0.3.1 also uses a private randomized remote operation directory, an
+atomic update lock, and a hash comparison immediately before installation. It
+reconciles ambiguous SSH failures before deciding whether to restart or roll
+back, limits imported configuration and SSH I/O to 8 MiB, masks a broader set
+of secret fields, and removes stale Windows credentials when connection
+identity changes. Configuration installation cannot be cancelled halfway
+through, preserving the automatic rollback path.
 
 ## Development
 
@@ -96,6 +99,7 @@ SingRoute requires Python 3.11–3.14 and Poetry.
 poetry config virtualenvs.in-project true --local
 poetry install
 poetry run pytest
+poetry run pip-audit
 poetry run python main.py
 ```
 
@@ -117,14 +121,14 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.3.0 -m "Release v0.3.0"
-git push origin v0.3.0
+git tag -a v0.3.1 -m "Release v0.3.1"
+git push origin v0.3.1
 ```
 
-The `Release` workflow validates the metadata, runs the Windows test suite,
-builds `SingRoute.exe`, generates its SHA-256 checksum and build attestation,
-and publishes the files to GitHub Releases. A tag that does not match the
-project version fails before publication.
+The `Release` workflow validates the metadata, audits Python dependencies, runs
+the Windows test suite, builds `SingRoute.exe`, generates its SHA-256 checksum
+and build attestation, and publishes the files to GitHub Releases. A tag that
+does not match the project version fails before publication.
 
 ## License
 

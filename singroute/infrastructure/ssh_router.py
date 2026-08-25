@@ -68,6 +68,8 @@ class SshRouterClient:
     trusted_host_key: str | None = field(default=None, repr=False)
     timeout: float = 10.0
     command_timeout: float = 15.0
+    max_output_bytes: int = 8 * 1024 * 1024
+    max_input_bytes: int = 8 * 1024 * 1024
     keepalive_interval: int = 30
     cancel_event: threading.Event | None = field(default=None, repr=False)
     progress_callback: Callable[[str], None] | None = field(default=None, repr=False)
@@ -87,13 +89,9 @@ class SshRouterClient:
         identity_files = _identity_files(self.identity_file, ssh_config)
 
         client = paramiko.SSHClient()
-        client.load_system_host_keys()
-        known_hosts = Path.home() / ".ssh" / "known_hosts"
-        if known_hosts.is_file():
-            try:
-                client.load_host_keys(str(known_hosts))
-            except (OSError, paramiko.SSHException):
-                pass
+        # Application-managed pinning must be the only trust source. Loading
+        # known_hosts here would let Paramiko accept a different key before
+        # _ExpectedHostKeyPolicy gets a chance to compare the saved pin.
         client.set_missing_host_key_policy(
             _ExpectedHostKeyPolicy(
                 host=self.host,
@@ -169,7 +167,9 @@ class SshRouterClient:
 
     def write_text(self, path: str, content: str) -> None:
         result = self._execute(
-            f"umask 077; cat > {shlex.quote(path)}",
+            # noclobber makes the initial open exclusive and rejects a
+            # pre-existing file or symlink instead of following it as root.
+            f"umask 077; set -C; cat > {shlex.quote(path)}",
             input_text=content,
         )
         if result.exit_code not in {0, -1}:
@@ -193,6 +193,12 @@ class SshRouterClient:
         input_text: str | None = None,
     ) -> CommandResult:
         self._check_cancelled()
+        input_bytes = input_text.encode("utf-8") if input_text is not None else None
+        if input_bytes is not None and len(input_bytes) > self.max_input_bytes:
+            raise SshRouterError(
+                "Передаваемый файл превышает безопасный лимит "
+                f"{self.max_input_bytes // (1024 * 1024)} МиБ."
+            )
         client = self._connected_client()
         self._report(f"SSH: {command}")
         try:
@@ -201,8 +207,8 @@ class SshRouterClient:
                 timeout=self.timeout,
             )
             channel = stdout.channel
-            if input_text is not None:
-                stdin.write(input_text.encode("utf-8"))
+            if input_bytes is not None:
+                stdin.write(input_bytes)
                 stdin.flush()
                 stdin.channel.shutdown_write()
             stdin.close()
@@ -212,6 +218,7 @@ class SshRouterClient:
         except SshOperationCancelled:
             raise
         except Exception as error:
+            self.close()
             if self.cancel_event is not None and self.cancel_event.is_set():
                 raise SshOperationCancelled("Операция отменена пользователем.") from error
             raise SshRouterError(f"SSH-команда не выполнена: {command}: {error}") from error
@@ -239,15 +246,15 @@ class SshRouterClient:
                 raise SshOperationCancelled("Операция отменена пользователем.")
 
             while channel.recv_ready():
-                stdout.extend(channel.recv(32768))
+                self._extend_output(stdout, stderr, channel.recv(32768), channel)
             while channel.recv_stderr_ready():
-                stderr.extend(channel.recv_stderr(32768))
+                self._extend_output(stderr, stdout, channel.recv_stderr(32768), channel)
 
             if channel.exit_status_ready():
                 while channel.recv_ready():
-                    stdout.extend(channel.recv(32768))
+                    self._extend_output(stdout, stderr, channel.recv(32768), channel)
                 while channel.recv_stderr_ready():
-                    stderr.extend(channel.recv_stderr(32768))
+                    self._extend_output(stderr, stdout, channel.recv_stderr(32768), channel)
                 return bytes(stdout), bytes(stderr), channel.recv_exit_status()
 
             if getattr(channel, "eof_received", False):
@@ -265,6 +272,21 @@ class SshRouterClient:
                     f"SSH-команда не ответила за {self.command_timeout:g} секунд."
                 )
             time.sleep(0.05)
+
+    def _extend_output(
+        self,
+        target: bytearray,
+        other: bytearray,
+        chunk: bytes,
+        channel: Any,
+    ) -> None:
+        if len(target) + len(other) + len(chunk) > self.max_output_bytes:
+            channel.close()
+            raise SshRouterError(
+                "Вывод SSH-команды превышает безопасный лимит "
+                f"{self.max_output_bytes // (1024 * 1024)} МиБ."
+            )
+        target.extend(chunk)
 
     def _connected_client(self) -> paramiko.SSHClient:
         self.connect()

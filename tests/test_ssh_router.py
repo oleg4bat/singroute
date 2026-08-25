@@ -59,6 +59,8 @@ def test_auto_auth_uses_agent_default_keys_and_ssh_config_identity(monkeypatch):
     assert fake.connect_kwargs["look_for_keys"] is True
     assert fake.connect_kwargs["password"] == "fallback"
     assert fake.connect_kwargs["key_filename"][0].endswith("router_key")
+    assert fake.system_host_keys_loaded is False
+    assert fake.user_host_keys_loaded is False
     assert "fallback" not in repr(client)
 
 
@@ -115,7 +117,9 @@ def test_write_text_streams_utf8_to_remote_cat_without_sftp():
 
     client.write_text("/etc/sing-box/config new.json", '{"tag": "тест"}\n')
 
-    assert transport.command == "umask 077; cat > '/etc/sing-box/config new.json'"
+    assert transport.command == (
+        "umask 077; set -C; cat > '/etc/sing-box/config new.json'"
+    )
     assert transport.stdin.payload == '{"tag": "тест"}\n'.encode("utf-8")
     assert transport.stdin.shutdown_called is True
 
@@ -142,6 +146,28 @@ def test_remote_command_has_an_overall_response_timeout():
         client.run("stuck-command")
 
     assert transport.channel.closed is True
+
+
+def test_remote_output_over_limit_closes_channel():
+    transport = FakeExecClient(stdout=b"x" * 17)
+    client = SshRouterClient(host="192.168.1.1", max_output_bytes=16)
+    client._client = transport
+
+    with pytest.raises(SshRouterError, match="превышает безопасный лимит"):
+        client.run("large-output")
+
+    assert transport.channel.closed is True
+
+
+def test_input_over_limit_is_rejected_before_remote_command():
+    transport = FakeExecClient()
+    client = SshRouterClient(host="192.168.1.1", max_input_bytes=4)
+    client._client = transport
+
+    with pytest.raises(SshRouterError, match="превышает безопасный лимит"):
+        client.write_text("/tmp/config", "12345")
+
+    assert transport.command == ""
 
 
 def test_cat_accepts_dropbear_eof_when_server_omits_exit_status():
@@ -183,12 +209,14 @@ class FakeSshClient:
     def __init__(self) -> None:
         self.connect_kwargs = {}
         self.policy = None
+        self.system_host_keys_loaded = False
+        self.user_host_keys_loaded = False
 
     def load_system_host_keys(self) -> None:
-        pass
+        self.system_host_keys_loaded = True
 
     def load_host_keys(self, path: str) -> None:
-        pass
+        self.user_host_keys_loaded = True
 
     def set_missing_host_key_policy(self, policy: object) -> None:
         self.policy = policy

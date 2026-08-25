@@ -21,7 +21,8 @@ from singroute.application.router_update import (
 from singroute.gui.main_window import MainWindow, _ask_yes_no
 from singroute.gui.main_window import ConnectedRouter
 from singroute.application.router_connection import RouterInfo
-from singroute.infrastructure.settings import PortableSettingsStore
+from singroute.infrastructure.credentials import CredentialTarget
+from singroute.infrastructure.settings import AppSettings, PortableSettingsStore
 from singroute.infrastructure.ssh_router import SshRouterClient
 import singroute.gui.main_window as main_window_module
 
@@ -61,14 +62,40 @@ def test_worker_result_is_delivered_back_to_gui_thread(tmp_path: Path):
 
 
 class FakeCredentialStore:
+    def __init__(self) -> None:
+        self.set_calls: list[tuple[object, str]] = []
+        self.delete_calls: list[object] = []
+
     def get_password(self, target: object) -> None:
         return None
 
     def set_password(self, target: object, password: str) -> None:
-        pass
+        self.set_calls.append((target, password))
 
     def delete_password(self, target: object) -> None:
-        pass
+        self.delete_calls.append(target)
+
+
+def test_changing_router_identity_removes_old_saved_credential(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    settings_store = PortableSettingsStore(tmp_path / "settings.ini")
+    settings_store.save(
+        AppSettings(host="old-router", username="root", remember_password=True)
+    )
+    credentials = FakeCredentialStore()
+    window = MainWindow(settings_store, credentials)
+    window.host_edit.setText("new-router")
+    window.password_edit.setText("new-password")
+
+    assert window._save_settings() is True
+
+    old_target = CredentialTarget("old-router", 22, "root")
+    new_target = CredentialTarget("new-router", 22, "root")
+    assert credentials.set_calls == [(new_target, "new-password")]
+    assert old_target in credentials.delete_calls
+    assert window.password_edit.text() == ""
+    window.deleteLater()
+    app.processEvents()
 
 
 def test_source_is_read_only_and_triggers_preview_immediately(tmp_path: Path):
@@ -287,20 +314,10 @@ def test_background_update_check_marks_available_version_without_dialog(
         PortableSettingsStore(tmp_path / "settings.ini"),
         FakeCredentialStore(),
     )
-    downloads: list[ReleaseInfo] = []
-    window._download_app_update = downloads.append  # type: ignore[method-assign]
     release = ReleaseInfo(
         version="0.4.0",
         tag="v0.4.0",
         page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.4.0",
-        executable_url=(
-            "https://github.com/oleg4bat/singroute/releases/download/"
-            "v0.4.0/SingRoute.exe"
-        ),
-        checksum_url=(
-            "https://github.com/oleg4bat/singroute/releases/download/"
-            "v0.4.0/SingRoute.exe.sha256"
-        ),
     )
 
     window._app_update_check_finished(
@@ -308,25 +325,24 @@ def test_background_update_check_marks_available_version_without_dialog(
         silent=True,
     )
 
-    assert window.app_update_button.text() == "Обновить до v0.4.0"
+    assert window.app_update_button.text() == "Открыть релиз v0.4.0"
     assert "Доступно обновление SingRoute v0.4.0" in window.log_edit.toPlainText()
-    assert downloads == []
     window.deleteLater()
     app.processEvents()
 
 
 @pytest.mark.parametrize(
-    ("answer", "should_download"),
+    ("answer", "should_open"),
     [
         (QMessageBox.StandardButton.No, False),
         (QMessageBox.StandardButton.Yes, True),
     ],
 )
-def test_update_download_requires_explicit_confirmation(
+def test_update_page_requires_explicit_confirmation(
     tmp_path: Path,
     monkeypatch,
     answer: QMessageBox.StandardButton,
-    should_download: bool,
+    should_open: bool,
 ):
     app = QApplication.instance() or QApplication([])
     window = MainWindow(
@@ -337,22 +353,17 @@ def test_update_download_requires_explicit_confirmation(
         version="0.4.0",
         tag="v0.4.0",
         page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.4.0",
-        executable_url=(
-            "https://github.com/oleg4bat/singroute/releases/download/"
-            "v0.4.0/SingRoute.exe"
-        ),
-        checksum_url=(
-            "https://github.com/oleg4bat/singroute/releases/download/"
-            "v0.4.0/SingRoute.exe.sha256"
-        ),
     )
-    downloads: list[ReleaseInfo] = []
-    window._download_app_update = downloads.append  # type: ignore[method-assign]
-    monkeypatch.setattr(main_window_module, "is_portable_windows_build", lambda: True)
+    opened: list[str] = []
+    monkeypatch.setattr(
+        main_window_module.QDesktopServices,
+        "openUrl",
+        lambda url: opened.append(url.toString()) or True,
+    )
     monkeypatch.setattr(main_window_module, "_ask_yes_no", lambda *args: answer)
 
     window._offer_app_update(release)
 
-    assert downloads == ([release] if should_download else [])
+    assert opened == ([release.page_url] if should_open else [])
     window.deleteLater()
     app.processEvents()

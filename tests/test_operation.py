@@ -3,6 +3,7 @@ import json
 import pytest
 
 from singroute.application.operation import (
+    MAX_CONFIG_BYTES,
     prepare_config_update,
     summarize_router_outbound,
 )
@@ -30,6 +31,34 @@ def test_summarize_router_outbound_masks_current_router_secrets():
         "tag": "proxy",
         "server": "current.test",
         "password": "***",
+    }
+
+
+def test_summarize_masks_case_and_extended_secret_names_recursively():
+    summary = summarize_router_outbound(
+        json.dumps(
+            {
+                "outbounds": [
+                    {
+                        "Token": "one",
+                        "client-secret": "two",
+                        "nested": {
+                            "preSharedKey": "three",
+                            "proxy_password_value": "four",
+                        },
+                    }
+                ]
+            }
+        )
+    )
+
+    assert summary == {
+        "Token": "***",
+        "client-secret": "***",
+        "nested": {
+            "preSharedKey": "***",
+            "proxy_password_value": "***",
+        },
     }
 
 
@@ -104,6 +133,18 @@ def test_prepare_config_update_wraps_invalid_router_json():
             json.dumps({"outbounds": [{"type": "vless", "server": "vpn.test"}]}),
             "{not-json",
         )
+
+
+def test_prepare_config_update_rejects_oversized_json_before_parsing():
+    with pytest.raises(ConfigParseError, match="safe limit"):
+        prepare_config_update(" " * (MAX_CONFIG_BYTES + 1), "{}")
+
+
+def test_prepare_config_update_wraps_excessive_json_nesting():
+    nested = "[" * 2000 + "0" + "]" * 2000
+
+    with pytest.raises(ConfigParseError, match="nested"):
+        prepare_config_update(nested, "{}")
 
 
 def test_prepare_config_update_rejects_unsupported_imported_config():
