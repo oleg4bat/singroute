@@ -11,8 +11,8 @@ import re
 import threading
 from typing import Any
 
-from PySide6.QtCore import QSignalBlocker, QThreadPool, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtCore import QSignalBlocker, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,8 +35,13 @@ from PySide6.QtWidgets import (
 from singroute import __version__
 from singroute.application.app_update import (
     ReleaseInfo,
+    StagedUpdate,
     UpdateCheckResult,
     check_for_update,
+    current_executable_path,
+    is_portable_windows_build,
+    launch_staged_update,
+    stage_update,
 )
 from singroute.application.operation import MAX_CONFIG_BYTES
 from singroute.application.router_update import (
@@ -445,7 +450,7 @@ class MainWindow(QMainWindow):
         if result.update_available:
             self._available_release = result.latest_release
             self.app_update_button.setText(
-                f"Открыть релиз v{result.latest_release.version}"
+                f"Установить v{result.latest_release.version}"
             )
             self._append_log(
                 f"Доступно обновление SingRoute v{result.latest_release.version}."
@@ -466,21 +471,47 @@ class MainWindow(QMainWindow):
             )
 
     def _offer_app_update(self, release: ReleaseInfo) -> None:
+        if not is_portable_windows_build():
+            QMessageBox.information(
+                self,
+                "Доступно обновление SingRoute",
+                f"Доступна версия v{release.version}. Автоматическая установка "
+                "работает в portable SingRoute.exe; среда разработки не изменена.",
+            )
+            return
         answer = _ask_yes_no(
             self,
             "Доступно обновление SingRoute",
             f"Доступна версия v{release.version}.\n\n"
-            "Открыть официальную страницу релиза для скачивания?",
+            "Установить обновление? После загрузки SingRoute автоматически "
+            "закроется, обновится и запустится снова.",
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        if not QDesktopServices.openUrl(QUrl(release.page_url)):
-            QMessageBox.warning(
-                self,
-                "Обновление SingRoute",
-                "Не удалось открыть официальную страницу релиза.",
-            )
+        self._download_app_update(release)
+
+    def _download_app_update(self, release: ReleaseInfo) -> None:
+        self._run_worker(
+            lambda: stage_update(release, current_executable_path()),
+            self._app_update_downloaded,
+            f"Загружаю SingRoute v{release.version}…",
+            retry=lambda: self._download_app_update(release),
+            cancellable=False,
+        )
+
+    def _app_update_downloaded(self, result: object) -> None:
+        if not isinstance(result, StagedUpdate):
+            raise TypeError("Некорректный результат загрузки обновления")
+        application = QApplication.instance()
+        if application is None:
+            raise RuntimeError("Экземпляр приложения уже завершён.")
+        launch_staged_update(result)
+        self._append_log(
+            f"Обновление v{result.release.version} проверено; перезапускаю SingRoute."
+        )
+        self.close()
+        application.quit()
 
     def _connection_fields_changed(self) -> None:
         if self._connected_client is not None:

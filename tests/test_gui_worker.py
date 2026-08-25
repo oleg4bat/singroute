@@ -13,7 +13,11 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from singroute.application.router_client import CommandResult
-from singroute.application.app_update import ReleaseInfo, UpdateCheckResult
+from singroute.application.app_update import (
+    ReleaseInfo,
+    StagedUpdate,
+    UpdateCheckResult,
+)
 from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
@@ -318,6 +322,15 @@ def test_background_update_check_marks_available_version_without_dialog(
         version="0.4.0",
         tag="v0.4.0",
         page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.4.0",
+        executable_url=(
+            "https://github.com/oleg4bat/singroute/releases/download/"
+            "v0.4.0/SingRoute.exe"
+        ),
+        checksum_url=(
+            "https://github.com/oleg4bat/singroute/releases/download/"
+            "v0.4.0/SingRoute.exe.sha256"
+        ),
+        executable_digest="a" * 64,
     )
 
     window._app_update_check_finished(
@@ -325,24 +338,24 @@ def test_background_update_check_marks_available_version_without_dialog(
         silent=True,
     )
 
-    assert window.app_update_button.text() == "Открыть релиз v0.4.0"
+    assert window.app_update_button.text() == "Установить v0.4.0"
     assert "Доступно обновление SingRoute v0.4.0" in window.log_edit.toPlainText()
     window.deleteLater()
     app.processEvents()
 
 
 @pytest.mark.parametrize(
-    ("answer", "should_open"),
+    ("answer", "should_install"),
     [
         (QMessageBox.StandardButton.No, False),
         (QMessageBox.StandardButton.Yes, True),
     ],
 )
-def test_update_page_requires_explicit_confirmation(
+def test_update_install_requires_explicit_confirmation(
     tmp_path: Path,
     monkeypatch,
     answer: QMessageBox.StandardButton,
-    should_open: bool,
+    should_install: bool,
 ):
     app = QApplication.instance() or QApplication([])
     window = MainWindow(
@@ -353,14 +366,25 @@ def test_update_page_requires_explicit_confirmation(
         version="0.4.0",
         tag="v0.4.0",
         page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.4.0",
+        executable_url=(
+            "https://github.com/oleg4bat/singroute/releases/download/"
+            "v0.4.0/SingRoute.exe"
+        ),
+        checksum_url=(
+            "https://github.com/oleg4bat/singroute/releases/download/"
+            "v0.4.0/SingRoute.exe.sha256"
+        ),
+        executable_digest="a" * 64,
     )
-    opened: list[str] = []
+    downloads: list[ReleaseInfo] = []
     prompts: list[str] = []
     monkeypatch.setattr(
-        main_window_module.QDesktopServices,
-        "openUrl",
-        lambda url: opened.append(url.toString()) or True,
+        main_window_module,
+        "is_portable_windows_build",
+        lambda: True,
     )
+    window._download_app_update = downloads.append  # type: ignore[method-assign]
+
     def ask_yes_no(*args):
         prompts.append(args[2])
         return answer
@@ -369,10 +393,57 @@ def test_update_page_requires_explicit_confirmation(
 
     window._offer_app_update(release)
 
-    assert opened == ([release.page_url] if should_open else [])
+    assert downloads == ([release] if should_install else [])
     assert len(prompts) == 1
     assert "SHA" not in prompts[0]
     assert "контрольн" not in prompts[0]
-    assert "официальную страницу релиза" in prompts[0]
+    assert "автоматически" in prompts[0]
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_verified_update_launches_helper_and_quits_application(
+    tmp_path: Path,
+    monkeypatch,
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    target = tmp_path / "SingRoute.exe"
+    staged_path = tmp_path / ".SingRoute.update-v0.4.0.exe"
+    release = ReleaseInfo(
+        version="0.4.0",
+        tag="v0.4.0",
+        page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.4.0",
+        executable_url="https://example.test/SingRoute.exe",
+        checksum_url="https://example.test/SingRoute.exe.sha256",
+        executable_digest="a" * 64,
+    )
+    staged = StagedUpdate(release, staged_path, target, "a" * 64)
+    launched: list[StagedUpdate] = []
+    quit_calls: list[bool] = []
+
+    class FakeApplication:
+        def quit(self) -> None:
+            quit_calls.append(True)
+
+    class FakeQApplication:
+        @staticmethod
+        def instance() -> FakeApplication:
+            return FakeApplication()
+
+    monkeypatch.setattr(
+        main_window_module,
+        "launch_staged_update",
+        launched.append,
+    )
+    monkeypatch.setattr(main_window_module, "QApplication", FakeQApplication)
+
+    window._app_update_downloaded(staged)
+
+    assert launched == [staged]
+    assert quit_calls == [True]
     window.deleteLater()
     app.processEvents()

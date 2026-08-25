@@ -20,8 +20,8 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 6. Creates a temporary backup on the router after validation succeeds.
 7. Installs the configuration atomically and restarts the OpenWrt service.
 8. Verifies the service and automatically rolls back on failure.
-9. Checks for new SingRoute releases and opens the official release page for a
-   user-controlled download.
+9. Downloads verified SingRoute updates, replaces the portable executable after
+   shutdown, and launches the updated application.
 
 SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP,
 and HAPP Hysteria2.
@@ -50,13 +50,15 @@ may contain secrets.
 
 By default, SingRoute checks the official latest GitHub release at startup.
 Startup checks can be disabled in advanced settings, and a manual check remains
-available from the button at the top of the main window. To avoid trusting an
-executable and its checksum from the same download channel, SingRoute does not
-download or execute updates automatically. It opens the exact official release
-page and leaves installation under user control.
+available from the button at the top of the main window. After explicit user
+confirmation, the portable build downloads the exact official executable and
+checksum assets. It requires the checksum, GitHub asset digest, and downloaded
+file hash to agree before installation.
 
-Version 0.3.2 fixes checksum line-ending compatibility for the one-time upgrade
-started by the legacy 0.3.0 updater.
+The verified file is staged next to `SingRoute.exe`. A detached Windows helper
+then closes SingRoute, waits for all PyInstaller file locks to disappear,
+replaces the executable with rollback protection, and starts SingRoute again.
+Version 0.3.3 adds this complete automatic replacement and restart flow.
 
 Default connection settings:
 
@@ -124,8 +126,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.3.2 -m "Release v0.3.2"
-git push origin v0.3.2
+git tag -a v0.3.3 -m "Release v0.3.3"
+git push origin v0.3.3
 ```
 
 The `Release` workflow validates the metadata, audits Python dependencies, runs
