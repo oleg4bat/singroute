@@ -69,8 +69,9 @@ Default connection settings:
 - service: `/etc/init.d/sing-box`.
 
 The main connection row contains the address, user, password, and password
-storage option. SSH port, authentication mode, private key, configuration path,
-and service name are available under advanced settings.
+storage option. The eye button in the password field temporarily reveals or
+hides the entered password. SSH port, authentication mode, private key,
+configuration path, and service name are available under advanced settings.
 
 ## SSH and safety
 
@@ -126,8 +127,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.3.3 -m "Release v0.3.3"
-git push origin v0.3.3
+git tag -a v0.3.4 -m "Release v0.3.4"
+git push origin v0.3.4
 ```
 
 The `Release` workflow validates the metadata, audits Python dependencies, runs

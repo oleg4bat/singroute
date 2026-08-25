@@ -11,8 +11,26 @@ import re
 import threading
 from typing import Any
 
-from PySide6.QtCore import QSignalBlocker, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtCore import (
+    QPointF,
+    QSignalBlocker,
+    QThreadPool,
+    QTimer,
+    Qt,
+    Signal,
+    Slot,
+)
+from PySide6.QtGui import (
+    QColor,
+    QCloseEvent,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -194,6 +212,15 @@ class MainWindow(QMainWindow):
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setClearButtonEnabled(True)
         self.password_edit.setMinimumWidth(135)
+        self.password_visibility_action = self.password_edit.addAction(
+            _password_visibility_icon(False),
+            QLineEdit.ActionPosition.TrailingPosition,
+        )
+        self.password_visibility_action.setObjectName("passwordVisibilityAction")
+        self.password_visibility_action.setCheckable(True)
+        self.password_visibility_action.setText("Показать пароль")
+        self.password_visibility_action.setToolTip("Показать пароль")
+        self.password_visibility_action.toggled.connect(self._set_password_visible)
         self.remember_password_check = QCheckBox("Сохранить пароль")
         connection_row.addWidget(QLabel("Адрес"))
         connection_row.addWidget(self.host_edit, 2)
@@ -548,6 +575,18 @@ class MainWindow(QMainWindow):
             self.password_edit.setPlaceholderText("Пусто = пароль из Windows")
         else:
             self.password_edit.setPlaceholderText("Не сохраняется")
+
+    @Slot(bool)
+    def _set_password_visible(self, visible: bool) -> None:
+        self.password_edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
+        )
+        label = "Скрыть пароль" if visible else "Показать пароль"
+        self.password_visibility_action.setIcon(
+            _password_visibility_icon(visible)
+        )
+        self.password_visibility_action.setText(label)
+        self.password_visibility_action.setToolTip(label)
 
     def _invalidate_preview(self, *_: object) -> None:
         if self.update_plan is not None:
@@ -1108,6 +1147,29 @@ def _ask_yes_no(
     if no_button is not None:
         no_button.setText("Нет")
     return QMessageBox.StandardButton(dialog.exec())
+
+
+def _password_visibility_icon(password_visible: bool) -> QIcon:
+    pixmap = QPixmap(18, 18)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor("#475467"))
+    pen.setWidthF(1.6)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+
+    eye = QPainterPath()
+    eye.moveTo(2.0, 9.0)
+    eye.cubicTo(4.8, 4.2, 13.2, 4.2, 16.0, 9.0)
+    eye.cubicTo(13.2, 13.8, 4.8, 13.8, 2.0, 9.0)
+    painter.drawPath(eye)
+    painter.drawEllipse(QPointF(9.0, 9.0), 2.2, 2.2)
+    if password_visible:
+        painter.drawLine(QPointF(3.0, 3.0), QPointF(15.0, 15.0))
+    painter.end()
+    return QIcon(pixmap)
 
 
 def _result_details(result: RouterUpdateResult) -> str:

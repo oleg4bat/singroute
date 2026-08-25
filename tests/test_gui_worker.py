@@ -80,6 +80,38 @@ class FakeCredentialStore:
         self.delete_calls.append(target)
 
 
+def test_password_eye_toggles_visibility_without_changing_password(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    window.password_edit.setText("router-secret")
+
+    assert (
+        window.password_edit.echoMode()
+        == window.password_edit.EchoMode.Password
+    )
+    assert window.password_visibility_action.isChecked() is False
+    assert window.password_visibility_action.toolTip() == "Показать пароль"
+
+    window.password_visibility_action.trigger()
+
+    assert window.password_edit.echoMode() == window.password_edit.EchoMode.Normal
+    assert window.password_edit.text() == "router-secret"
+    assert window.password_visibility_action.toolTip() == "Скрыть пароль"
+
+    window.password_visibility_action.trigger()
+
+    assert (
+        window.password_edit.echoMode()
+        == window.password_edit.EchoMode.Password
+    )
+    assert window.password_edit.text() == "router-secret"
+    window.deleteLater()
+    app.processEvents()
+
+
 def test_changing_router_identity_removes_old_saved_credential(tmp_path: Path):
     app = QApplication.instance() or QApplication([])
     settings_store = PortableSettingsStore(tmp_path / "settings.ini")
