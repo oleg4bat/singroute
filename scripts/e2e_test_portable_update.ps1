@@ -71,9 +71,14 @@ function Stop-ProcessTree {
             $output = & "$env:SystemRoot\System32\taskkill.exe" `
                 /PID $Process.Id /T /F 2>&1
             if ($LASTEXITCODE -ne 0) {
-                throw "taskkill failed for PID $($Process.Id): $($output -join ' ')"
+                $Process.Refresh()
+                if (-not $Process.HasExited) {
+                    throw "taskkill failed for PID $($Process.Id): $($output -join ' ')"
+                }
             }
-            $Process.WaitForExit(10000) | Out-Null
+            if (-not $Process.HasExited) {
+                $Process.WaitForExit(10000) | Out-Null
+            }
         }
     }
     finally {
@@ -95,11 +100,24 @@ function Wait-ForCondition {
         [Parameter(Mandatory=$true)][int]$Seconds
     )
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    $lastConditionError = $null
     while ([DateTime]::UtcNow -lt $deadline) {
-        if (& $Condition) {
-            return
+        try {
+            if (& $Condition) {
+                return
+            }
+            $lastConditionError = $null
+        }
+        catch {
+            # Atomic replacement deliberately leaves a short interval without
+            # the target path. Treat transient observation errors like a false
+            # condition and keep waiting for the complete stable state.
+            $lastConditionError = $_.Exception.Message
         }
         Start-Sleep -Milliseconds 100
+    }
+    if ($null -ne $lastConditionError) {
+        throw "$Failure Last observation error: $lastConditionError"
     }
     throw $Failure
 }
