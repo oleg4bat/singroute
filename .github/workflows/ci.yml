@@ -36,8 +36,22 @@ jobs:
       - name: Check project metadata
         run: poetry check
 
-      - name: Run tests
-        run: poetry run pytest -q -p no:cacheprovider
+      - name: Check code style
+        run: poetry run ruff check .
+
+      - name: Check formatting
+        run: poetry run ruff format --check .
+
+      - name: Run tests with branch coverage
+        run: poetry run pytest -q --cov=singroute --cov-report=term-missing
 
       - name: Audit Python dependencies
         run: poetry run pip-audit
+
+      - name: Build portable application
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Test portable self-update and rollback
+        shell: pwsh
+        run: .\scripts\e2e_test_portable_update.ps1 dist\SingRoute.exe

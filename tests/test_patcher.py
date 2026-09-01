@@ -102,6 +102,61 @@ def test_select_exported_outbound_skips_block_and_selects_hysteria2():
     }
 
 
+def test_select_exported_outbound_skips_malformed_vless_candidate():
+    result = select_exported_outbound(
+        {
+            "outbounds": [
+                {
+                    "protocol": "vless",
+                    "settings": {},
+                    "streamSettings": {
+                        "network": "tcp",
+                        "security": "reality",
+                    },
+                },
+                {"type": "hysteria2", "server": "vpn.test"},
+            ]
+        }
+    )
+
+    assert result == {"type": "hysteria2", "server": "vpn.test"}
+
+
+def test_select_exported_outbound_skips_malformed_hysteria2_candidate():
+    result = select_exported_outbound(
+        {
+            "outbounds": [
+                {
+                    "protocol": "hysteria",
+                    "settings": {"address": "broken.test", "port": 443, "version": 2},
+                    "streamSettings": {"hysteriaSettings": {"version": 2}},
+                },
+                {"type": "vless", "server": "vpn.test"},
+            ]
+        }
+    )
+
+    assert result == {"type": "vless", "server": "vpn.test"}
+
+
+def test_select_exported_outbound_reports_error_when_all_candidates_are_malformed():
+    with pytest.raises(ConfigPatchError, match=r"settings\.vnext"):
+        select_exported_outbound(
+            {
+                "outbounds": [
+                    {
+                        "protocol": "vless",
+                        "settings": {},
+                        "streamSettings": {
+                            "network": "tcp",
+                            "security": "reality",
+                        },
+                    }
+                ]
+            }
+        )
+
+
 def test_select_exported_outbound_without_supported_proxy_raises_clear_error():
     with pytest.raises(ConfigPatchError, match="поддерживаемый proxy outbound"):
         select_exported_outbound(

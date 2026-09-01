@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from typing import Any
 
-from singroute.core.converters import normalize_outbound_to_singbox
 from singroute.core.errors import ConfigParseError
 from singroute.core.patcher import (
     patch_router_config,
     select_exported_outbound,
 )
 from singroute.core.preview import summarize_outbound
-
 
 MAX_CONFIG_BYTES = 8 * 1024 * 1024
 MAX_JSON_DEPTH = 128
@@ -23,6 +21,7 @@ MAX_JSON_DEPTH = 128
 class ConfigUpdate:
     updated_config: dict[str, Any]
     preview: dict[str, Any]
+    has_changes: bool
 
 
 def summarize_router_outbound(router_config_content: str) -> dict[str, Any]:
@@ -43,12 +42,12 @@ def prepare_config_update(
     )
 
     old_outbound = _get_first_router_outbound(current_router_config)
-    imported_outbound = select_exported_outbound(imported_config)
-    new_outbound = normalize_outbound_to_singbox(imported_outbound)
+    new_outbound = select_exported_outbound(imported_config)
     updated_config = patch_router_config(current_router_config, new_outbound)
+    updated_outbound = updated_config["outbounds"][0]
 
     old_outbound_summary = summarize_outbound(old_outbound)
-    new_outbound_summary = summarize_outbound(updated_config["outbounds"][0])
+    new_outbound_summary = summarize_outbound(updated_outbound)
 
     return ConfigUpdate(
         updated_config=updated_config,
@@ -56,11 +55,17 @@ def prepare_config_update(
             "old_outbound": old_outbound_summary,
             "new_outbound": new_outbound_summary,
         },
+        has_changes=old_outbound != updated_outbound,
     )
 
 
+def config_text_exceeds_limit(config_text: str) -> bool:
+    """Return whether UTF-8 config content exceeds the accepted input size."""
+    return len(config_text.encode("utf-8")) > MAX_CONFIG_BYTES
+
+
 def _loads_config(config_text: str, config_name: str) -> Any:
-    if len(config_text) > MAX_CONFIG_BYTES or len(config_text.encode("utf-8")) > MAX_CONFIG_BYTES:
+    if config_text_exceeds_limit(config_text):
         raise ConfigParseError(
             f"{config_name} exceeds the safe limit of "
             f"{MAX_CONFIG_BYTES // (1024 * 1024)} MiB"

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import paramiko
-import pytest
 import threading
 import time
+
+import paramiko
+import pytest
 
 import singroute.infrastructure.ssh_router as ssh_router
 from singroute.infrastructure.ssh_router import (
@@ -30,9 +31,7 @@ def test_confirmed_host_key_is_accepted_and_changed_key_is_rejected():
     key = paramiko.RSAKey.generate(1024)
     info = ssh_router._host_key_info("openwrt.lan", 22, key)
     client = FakePolicyClient()
-    policy = ssh_router._ExpectedHostKeyPolicy(
-        "openwrt.lan", 22, info.trust_token
-    )
+    policy = ssh_router._ExpectedHostKeyPolicy("openwrt.lan", 22, info.trust_token)
 
     policy.missing_host_key(client, "openwrt.lan", key)
     assert client.host_keys.lookup("openwrt.lan") is not None
@@ -120,7 +119,7 @@ def test_write_text_streams_utf8_to_remote_cat_without_sftp():
     assert transport.command == (
         "umask 077; set -C; cat > '/etc/sing-box/config new.json'"
     )
-    assert transport.stdin.payload == '{"tag": "тест"}\n'.encode("utf-8")
+    assert transport.stdin.payload == '{"tag": "тест"}\n'.encode()
     assert transport.stdin.shutdown_called is True
 
 
@@ -283,7 +282,7 @@ class FakeStdin:
 
 
 class FakeOutput:
-    def __init__(self, channel: "FakeChannel") -> None:
+    def __init__(self, channel: FakeChannel) -> None:
         self.channel = channel
 
 

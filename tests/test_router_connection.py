@@ -4,11 +4,11 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from singroute.application.router_client import CommandResult
 from singroute.application.router_connection import (
     RouterCompatibilityError,
     inspect_router,
 )
-from singroute.application.router_client import CommandResult
 
 
 def test_inspect_router_returns_release_and_binary_and_reports_progress():
@@ -71,7 +71,4 @@ class FakeRouterClient:
         raise NotImplementedError
 
     def write_text(self, path: str, content: str) -> None:
-        raise NotImplementedError
-
-    def copy_file(self, source_path: str, target_path: str) -> None:
         raise NotImplementedError

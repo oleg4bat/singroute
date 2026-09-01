@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import base64
 import hashlib
 import hmac
-from pathlib import Path
 import shlex
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 import paramiko
 
@@ -82,7 +84,9 @@ class SshRouterClient:
         if self._client is not None:
             return
         if self.auth_mode not in {"auto", "key", "password"}:
-            raise SshRouterError(f"Неизвестный режим SSH-аутентификации: {self.auth_mode}")
+            raise SshRouterError(
+                f"Неизвестный режим SSH-аутентификации: {self.auth_mode}"
+            )
 
         ssh_config = _load_ssh_config(self.host)
         resolved_host = str(ssh_config.get("hostname", self.host))
@@ -129,7 +133,9 @@ class SshRouterClient:
         except Exception as error:
             self.close()
             if self.cancel_event is not None and self.cancel_event.is_set():
-                raise SshOperationCancelled("Операция отменена пользователем.") from error
+                raise SshOperationCancelled(
+                    "Операция отменена пользователем."
+                ) from error
             raise SshRouterError(
                 f"Не удалось подключиться к {self.user}@{self.host}:{self.port}: {error}"
             ) from error
@@ -162,7 +168,9 @@ class SshRouterClient:
             message = result.stderr.strip() or result.stdout.strip() or "без описания"
             raise SshRouterError(f"Не удалось прочитать {path}: {message}")
         if result.exit_code == -1 and result.stderr.strip():
-            raise SshRouterError(f"Не удалось прочитать {path}: {result.stderr.strip()}")
+            raise SshRouterError(
+                f"Не удалось прочитать {path}: {result.stderr.strip()}"
+            )
         return result.stdout
 
     def write_text(self, path: str, content: str) -> None:
@@ -177,12 +185,6 @@ class SshRouterClient:
             raise SshRouterError(f"Не удалось записать {path}: {message}")
         if result.exit_code == -1 and result.stderr.strip():
             raise SshRouterError(f"Не удалось записать {path}: {result.stderr.strip()}")
-
-    def copy_file(self, source_path: str, target_path: str) -> None:
-        result = self.run(
-            f"cp -p {shlex.quote(source_path)} {shlex.quote(target_path)}"
-        )
-        self._raise_for_failure(result)
 
     def run(self, command: str) -> CommandResult:
         return self._execute(command)
@@ -202,7 +204,7 @@ class SshRouterClient:
         client = self._connected_client()
         self._report(f"SSH: {command}")
         try:
-            stdin, stdout, stderr = client.exec_command(
+            stdin, stdout, _stderr_stream = client.exec_command(
                 command,
                 timeout=self.timeout,
             )
@@ -212,16 +214,18 @@ class SshRouterClient:
                 stdin.flush()
                 stdin.channel.shutdown_write()
             stdin.close()
-            stdout_bytes, stderr_bytes, exit_code = self._read_command_output(
-                channel
-            )
+            stdout_bytes, stderr_bytes, exit_code = self._read_command_output(channel)
         except SshOperationCancelled:
             raise
         except Exception as error:
             self.close()
             if self.cancel_event is not None and self.cancel_event.is_set():
-                raise SshOperationCancelled("Операция отменена пользователем.") from error
-            raise SshRouterError(f"SSH-команда не выполнена: {command}: {error}") from error
+                raise SshOperationCancelled(
+                    "Операция отменена пользователем."
+                ) from error
+            raise SshRouterError(
+                f"SSH-команда не выполнена: {command}: {error}"
+            ) from error
         result = CommandResult(
             command=command,
             exit_code=exit_code,
@@ -254,7 +258,9 @@ class SshRouterClient:
                 while channel.recv_ready():
                     self._extend_output(stdout, stderr, channel.recv(32768), channel)
                 while channel.recv_stderr_ready():
-                    self._extend_output(stderr, stdout, channel.recv_stderr(32768), channel)
+                    self._extend_output(
+                        stderr, stdout, channel.recv_stderr(32768), channel
+                    )
                 return bytes(stdout), bytes(stderr), channel.recv_exit_status()
 
             if getattr(channel, "eof_received", False):
@@ -301,15 +307,6 @@ class SshRouterClient:
     def _report(self, message: str) -> None:
         if self.progress_callback is not None:
             self.progress_callback(message)
-
-    @staticmethod
-    def _raise_for_failure(result: CommandResult) -> None:
-        if result.exit_code != 0:
-            message = result.stderr.strip() or result.stdout.strip() or "без описания"
-            raise SshRouterError(
-                f"SSH-команда завершилась с кодом {result.exit_code}: "
-                f"{result.command}: {message}"
-            )
 
 
 class _ExpectedHostKeyPolicy(paramiko.MissingHostKeyPolicy):
@@ -376,7 +373,5 @@ def _decode_output(value: bytes | str) -> str:
 
 
 def _close_paramiko_client(client: paramiko.SSHClient) -> None:
-    try:
+    with suppress(Exception):
         client.close()
-    except Exception:
-        pass

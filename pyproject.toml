@@ -1,6 +1,6 @@
 [project]
 name = "singroute"
-version = "0.3.5"
+version = "0.4.0"
 description = "Safe portable Windows GUI for synchronizing sing-box outbounds on OpenWrt routers."
 authors = [{ name = "SingRoute contributors" }]
 readme = "README.md"
@@ -13,14 +13,37 @@ dependencies = [
 
 [tool.poetry]
 packages = [{ include = "singroute" }]
+include = [
+    { path = "singroute/application/update.ps1", format = ["sdist", "wheel"] },
+]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.3"
 pyinstaller = "^6.22.2"
 pip-audit = "^2.9.0"
+pytest-cov = "^7.1.0"
+ruff = "^0.16.4"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["-p", "no:cacheprovider"]
+
+[tool.coverage.run]
+branch = true
+source = ["singroute"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 70
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501", "RUF001", "RUF002", "RUF003", "SIM112"]
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

@@ -9,26 +9,28 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEventLoop, Qt, QTimer
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 
-from singroute.application.router_client import CommandResult
+import singroute.gui.app as gui_app_module
+import singroute.gui.main_window as main_window_module
 from singroute.application.app_update import (
     ReleaseInfo,
     StagedUpdate,
     UpdateCheckResult,
 )
+from singroute.application.router_client import CommandResult
+from singroute.application.router_connection import RouterInfo
 from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
 )
-from singroute.gui.main_window import MainWindow, _ask_yes_no
-from singroute.gui.main_window import ConnectedRouter
-from singroute.application.router_connection import RouterInfo
+from singroute.gui.advanced_settings import AdvancedSettingsDialog
+from singroute.gui.main_window import ConnectedRouter, MainWindow, _ask_yes_no
 from singroute.infrastructure.credentials import CredentialTarget
 from singroute.infrastructure.settings import AppSettings, PortableSettingsStore
 from singroute.infrastructure.ssh_router import SshRouterClient
-import singroute.gui.main_window as main_window_module
 
 
 def test_worker_result_is_delivered_back_to_gui_thread(tmp_path: Path):
@@ -65,19 +67,181 @@ def test_worker_result_is_delivered_back_to_gui_thread(tmp_path: Path):
     app.processEvents()
 
 
+def test_noncancellable_operation_uses_its_own_close_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    captured: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, _title, message: captured.append(message),
+    )
+    window._busy = True
+    window._operation_cancellable = False
+    window._busy_close_message = "Дождитесь загрузки обновления SingRoute."
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert event.isAccepted() is False
+    assert captured == ["Дождитесь загрузки обновления SingRoute."]
+    window._busy = False
+    window.deleteLater()
+    app.processEvents()
+
+
 class FakeCredentialStore:
     def __init__(self) -> None:
+        self.passwords: dict[object, str] = {}
         self.set_calls: list[tuple[object, str]] = []
         self.delete_calls: list[object] = []
 
-    def get_password(self, target: object) -> None:
-        return None
+    def get_password(self, target: object) -> str | None:
+        return self.passwords.get(target)
 
     def set_password(self, target: object, password: str) -> None:
         self.set_calls.append((target, password))
+        self.passwords[target] = password
 
     def delete_password(self, target: object) -> None:
         self.delete_calls.append(target)
+        self.passwords.pop(target, None)
+
+
+def test_gui_entry_point_configures_and_shows_main_window(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, object]] = []
+
+    class FakeApplication:
+        def __init__(self, arguments: list[str]) -> None:
+            calls.append(("arguments", arguments))
+
+        def setApplicationName(self, value: str) -> None:
+            calls.append(("name", value))
+
+        def setApplicationVersion(self, value: str) -> None:
+            calls.append(("version", value))
+
+        def setOrganizationName(self, value: str) -> None:
+            calls.append(("organization", value))
+
+        def setStyle(self, value: str) -> None:
+            calls.append(("style", value))
+
+        def exec(self) -> int:
+            return 7
+
+    class FakeWindow:
+        def show(self) -> None:
+            calls.append(("window", "shown"))
+
+    class FakeLock:
+        def unlock(self) -> None:
+            calls.append(("lock", "released"))
+
+    monkeypatch.setattr(gui_app_module, "QApplication", FakeApplication)
+    monkeypatch.setattr(gui_app_module, "MainWindow", FakeWindow)
+    monkeypatch.setattr(gui_app_module, "_acquire_instance_lock", FakeLock)
+
+    assert gui_app_module.run_gui() == 7
+    assert ("name", "SingRoute") in calls
+    assert ("organization", "SingRoute") in calls
+    assert ("style", "Fusion") in calls
+    assert ("window", "shown") in calls
+    assert ("lock", "released") in calls
+
+
+def test_gui_warns_when_previous_executable_could_not_be_removed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    backup = tmp_path / ".SingRoute.previous.exe"
+    messages: list[str] = []
+    monkeypatch.setattr(
+        gui_app_module,
+        "retained_update_backup_path",
+        lambda: backup,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: messages.append(message),
+    )
+
+    gui_app_module._show_retained_update_backup(object())  # type: ignore[arg-type]
+
+    assert len(messages) == 1
+    assert str(backup) in messages[0]
+    assert "Следующее автоматическое обновление будет недоступно" in messages[0]
+
+
+def test_instance_lock_rejects_second_process_in_same_directory(tmp_path: Path):
+    first = gui_app_module._acquire_instance_lock(tmp_path)
+
+    assert first is not None
+    assert gui_app_module._acquire_instance_lock(tmp_path) is None
+
+    first.unlock()
+    replacement = gui_app_module._acquire_instance_lock(tmp_path)
+    assert replacement is not None
+    replacement.unlock()
+
+
+def test_advanced_settings_dialog_applies_all_fields(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    settings = AppSettings(
+        port=2222,
+        auth_mode="key",
+        identity_file="old-key",
+        config_path="/old/config.json",
+        service_name="old-service",
+        check_updates_on_startup=True,
+    )
+    dialog = AdvancedSettingsDialog(settings)
+
+    dialog.port_spin.setValue(2200)
+    dialog.auth_combo.setCurrentIndex(dialog.auth_combo.findData("password"))
+    dialog.identity_edit.setText("  new-key  ")
+    dialog.config_path_edit.setText("  /new/config.json  ")
+    dialog.service_name_edit.setText("  sing-box-new  ")
+    dialog.check_updates_on_startup.setChecked(False)
+    dialog.apply_to(settings)
+
+    assert settings.port == 2200
+    assert settings.auth_mode == "password"
+    assert settings.identity_file == "new-key"
+    assert settings.config_path == "/new/config.json"
+    assert settings.service_name == "sing-box-new"
+    assert settings.check_updates_on_startup is False
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_advanced_settings_key_browser_uses_selected_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = QApplication.instance() or QApplication([])
+    selected = tmp_path / "id_ed25519"
+    dialog = AdvancedSettingsDialog(AppSettings(identity_file=str(tmp_path)))
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args: (str(selected), "Все файлы (*)"),
+    )
+
+    dialog._browse_identity()
+
+    assert dialog.identity_edit.text() == str(selected)
+    dialog.deleteLater()
+    app.processEvents()
 
 
 def test_password_eye_toggles_visibility_without_changing_password(tmp_path: Path):
@@ -88,10 +252,7 @@ def test_password_eye_toggles_visibility_without_changing_password(tmp_path: Pat
     )
     window.password_edit.setText("router-secret")
 
-    assert (
-        window.password_edit.echoMode()
-        == window.password_edit.EchoMode.Password
-    )
+    assert window.password_edit.echoMode() == window.password_edit.EchoMode.Password
     assert window.password_visibility_action.isChecked() is False
     assert window.password_visibility_action.toolTip() == "Показать пароль"
 
@@ -103,11 +264,106 @@ def test_password_eye_toggles_visibility_without_changing_password(tmp_path: Pat
 
     window.password_visibility_action.trigger()
 
-    assert (
-        window.password_edit.echoMode()
-        == window.password_edit.EchoMode.Password
-    )
+    assert window.password_edit.echoMode() == window.password_edit.EchoMode.Password
     assert window.password_edit.text() == "router-secret"
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_disabling_password_storage_keeps_entered_password(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    prepared_plan = object()
+    window.update_plan = prepared_plan  # type: ignore[assignment]
+    window.apply_button.setEnabled(True)
+    window.remember_password_check.setChecked(True)
+    window.password_edit.setText("router-secret")
+
+    window.remember_password_check.setChecked(False)
+
+    assert window.password_edit.text() == "router-secret"
+    assert window.update_plan is prepared_plan
+    assert window.apply_button.isEnabled() is True
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_vault_failure_does_not_persist_remember_password(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    settings_store = PortableSettingsStore(tmp_path / "settings.ini")
+
+    class FailingCredentialStore(FakeCredentialStore):
+        def set_password(self, target: object, password: str) -> None:
+            raise RuntimeError("vault unavailable")
+
+    window = MainWindow(settings_store, FailingCredentialStore())
+    window.password_edit.setText("router-secret")
+    window.remember_password_check.setChecked(True)
+
+    assert window._save_settings() is False
+
+    assert settings_store.load().remember_password is False
+    assert window.settings.remember_password is False
+    assert window.password_edit.text() == "router-secret"
+    assert window.status_label.text() == "Настройки не сохранены"
+    assert window.log_edit.isHidden() is False
+    assert "vault unavailable" in window.log_edit.toPlainText()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_ini_failure_restores_previous_vault_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = QApplication.instance() or QApplication([])
+    settings_store = PortableSettingsStore(tmp_path / "settings.ini")
+    credentials = FakeCredentialStore()
+    window = MainWindow(settings_store, credentials)
+    target = CredentialTarget("192.168.1.1", 22, "root")
+    window.password_edit.setText("router-secret")
+    window.remember_password_check.setChecked(True)
+
+    def fail_save(settings: AppSettings) -> None:
+        raise OSError("read-only directory")
+
+    monkeypatch.setattr(settings_store, "save", fail_save)
+
+    assert window._save_settings() is False
+
+    assert credentials.get_password(target) is None
+    assert window.settings.remember_password is False
+    assert window.password_edit.text() == "router-secret"
+    assert "read-only directory" in window.log_edit.toPlainText()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_vault_delete_failure_keeps_remember_password_enabled(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    settings_store = PortableSettingsStore(tmp_path / "settings.ini")
+    settings_store.save(AppSettings(remember_password=True))
+    target = CredentialTarget("192.168.1.1", 22, "root")
+
+    class FailingCredentialStore(FakeCredentialStore):
+        def delete_password(self, target: object) -> None:
+            raise RuntimeError("vault unavailable")
+
+    credentials = FailingCredentialStore()
+    credentials.passwords[target] = "saved-secret"
+    window = MainWindow(settings_store, credentials)
+    window.password_edit.setText("one-time-secret")
+    window.remember_password_check.setChecked(False)
+
+    assert window._save_settings() is False
+
+    assert settings_store.load().remember_password is True
+    assert window.settings.remember_password is True
+    assert credentials.get_password(target) == "saved-secret"
+    assert window.password_edit.text() == "one-time-secret"
     window.deleteLater()
     app.processEvents()
 
@@ -130,6 +386,89 @@ def test_changing_router_identity_removes_old_saved_credential(tmp_path: Path):
     assert credentials.set_calls == [(new_target, "new-password")]
     assert old_target in credentials.delete_calls
     assert window.password_edit.text() == ""
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_advanced_update_preference_keeps_prepared_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = QApplication.instance() or QApplication([])
+    settings_store = PortableSettingsStore(tmp_path / "settings.ini")
+    window = MainWindow(settings_store, FakeCredentialStore())
+    client = SshRouterClient("192.168.1.1")
+    prepared_plan = object()
+    window._connected_client = client
+    window.update_plan = prepared_plan  # type: ignore[assignment]
+    window.apply_button.setEnabled(True)
+
+    class UpdatePreferenceDialog:
+        def __init__(self, settings: AppSettings, parent: MainWindow) -> None:
+            pass
+
+        def exec(self) -> QDialog.DialogCode:
+            return QDialog.DialogCode.Accepted
+
+        def apply_to(self, settings: AppSettings) -> None:
+            settings.check_updates_on_startup = False
+
+    monkeypatch.setattr(
+        main_window_module,
+        "AdvancedSettingsDialog",
+        UpdatePreferenceDialog,
+    )
+
+    window._open_advanced_settings()
+
+    assert window.settings.check_updates_on_startup is False
+    assert window._connected_client is client
+    assert window.update_plan is prepared_plan
+    assert window.apply_button.isEnabled() is True
+    window._connected_client = None
+    client.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_failed_advanced_save_keeps_active_settings_and_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = QApplication.instance() or QApplication([])
+    settings_store = PortableSettingsStore(tmp_path / "settings.ini")
+    window = MainWindow(settings_store, FakeCredentialStore())
+    client = SshRouterClient("192.168.1.1")
+    prepared_plan = object()
+    window._connected_client = client
+    window.update_plan = prepared_plan  # type: ignore[assignment]
+    window.apply_button.setEnabled(True)
+
+    class PortDialog:
+        def __init__(self, settings: AppSettings, parent: MainWindow) -> None:
+            pass
+
+        def exec(self) -> QDialog.DialogCode:
+            return QDialog.DialogCode.Accepted
+
+        def apply_to(self, settings: AppSettings) -> None:
+            settings.port = 2222
+
+    monkeypatch.setattr(main_window_module, "AdvancedSettingsDialog", PortDialog)
+
+    def fail_save(settings: AppSettings) -> None:
+        raise OSError("read-only directory")
+
+    monkeypatch.setattr(settings_store, "save", fail_save)
+
+    window._open_advanced_settings()
+
+    assert window.settings.port == 22
+    assert window._connected_client is client
+    assert window.update_plan is prepared_plan
+    assert window.apply_button.isEnabled() is True
+    window._connected_client = None
+    client.close()
     window.deleteLater()
     app.processEvents()
 
@@ -299,6 +638,7 @@ def test_rechecked_equal_preview_shows_current_data_without_enabling_update(
             "old_outbound": current_outbound,
             "new_outbound": dict(current_outbound),
         },
+        has_changes=False,
     )
 
     window._preview_finished(plan)
@@ -358,10 +698,6 @@ def test_background_update_check_marks_available_version_without_dialog(
             "https://github.com/oleg4bat/singroute/releases/download/"
             "v0.4.0/SingRoute.exe"
         ),
-        checksum_url=(
-            "https://github.com/oleg4bat/singroute/releases/download/"
-            "v0.4.0/SingRoute.exe.sha256"
-        ),
         executable_digest="a" * 64,
     )
 
@@ -401,10 +737,6 @@ def test_update_install_requires_explicit_confirmation(
         executable_url=(
             "https://github.com/oleg4bat/singroute/releases/download/"
             "v0.4.0/SingRoute.exe"
-        ),
-        checksum_url=(
-            "https://github.com/oleg4bat/singroute/releases/download/"
-            "v0.4.0/SingRoute.exe.sha256"
         ),
         executable_digest="a" * 64,
     )
@@ -450,7 +782,6 @@ def test_verified_update_launches_helper_and_quits_application(
         tag="v0.4.0",
         page_url="https://github.com/oleg4bat/singroute/releases/tag/v0.4.0",
         executable_url="https://example.test/SingRoute.exe",
-        checksum_url="https://example.test/SingRoute.exe.sha256",
         executable_digest="a" * 64,
     )
     staged = StagedUpdate(release, staged_path, target, "a" * 64)

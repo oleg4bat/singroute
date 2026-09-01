@@ -43,8 +43,14 @@ jobs:
       - name: Check project metadata
         run: poetry check
 
-      - name: Run tests
-        run: poetry run pytest -q -p no:cacheprovider
+      - name: Check code style
+        run: poetry run ruff check .
+
+      - name: Check formatting
+        run: poetry run ruff format --check .
+
+      - name: Run tests with branch coverage
+        run: poetry run pytest -q --cov=singroute --cov-report=term-missing
 
       - name: Audit Python dependencies
         run: poetry run pip-audit
@@ -53,8 +59,9 @@ jobs:
         shell: pwsh
         run: .\build.ps1
 
-      - name: Create SHA-256 checksum
-        run: poetry run python scripts/create_release_checksum.py dist/SingRoute.exe
+      - name: Test portable self-update and rollback
+        shell: pwsh
+        run: .\scripts\e2e_test_portable_update.ps1 dist\SingRoute.exe
 
       - name: Attest release binary
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
@@ -68,7 +75,6 @@ jobs:
         run: |
           gh release create $env:GITHUB_REF_NAME `
             "dist/SingRoute.exe#Portable Windows application" `
-            "dist/SingRoute.exe.sha256#SHA-256 checksum" `
             --verify-tag `
             --generate-notes `
             --title "SingRoute $env:GITHUB_REF_NAME"

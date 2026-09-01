@@ -13,8 +13,11 @@ def normalize_outbound_to_singbox(outbound: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(outbound, dict):
         raise ConfigPatchError("outbound must be a JSON object (dict)")
 
-    if "type" in outbound:
+    outbound_type = outbound.get("type")
+    if isinstance(outbound_type, str):
         return deepcopy(outbound)
+    if "type" in outbound:
+        raise ConfigPatchError("Invalid field: type must be a string")
 
     protocol = outbound.get("protocol")
     if protocol is None:
@@ -72,7 +75,11 @@ def _convert_vless_reality_tcp(outbound: dict[str, Any]) -> dict[str, Any]:
         "server_name": deepcopy(
             _require_value(reality_settings, "serverName", "realitySettings")
         ),
-        "insecure": bool(reality_settings.get("allowInsecure", False)),
+        "insecure": _optional_bool(
+            reality_settings,
+            "allowInsecure",
+            "realitySettings",
+        ),
         "reality": {
             "enabled": True,
             "public_key": deepcopy(
@@ -115,7 +122,7 @@ def _convert_hysteria2(outbound: dict[str, Any]) -> dict[str, Any]:
 
     tls: dict[str, Any] = {
         "enabled": True,
-        "insecure": bool(tls_settings.get("allowInsecure", False)),
+        "insecure": _optional_bool(tls_settings, "allowInsecure", "tlsSettings"),
     }
     if "serverName" in tls_settings:
         tls["server_name"] = deepcopy(tls_settings["serverName"])
@@ -151,6 +158,21 @@ def _require_value(source: dict[str, Any], key: str, location: str) -> Any:
     if key not in source or source[key] in (None, ""):
         raise ConfigPatchError(f"Missing required field: {location}.{key}")
     return source[key]
+
+
+def _optional_bool(
+    source: dict[str, Any],
+    key: str,
+    location: str,
+    *,
+    default: bool = False,
+) -> bool:
+    if key not in source:
+        return default
+    value = source[key]
+    if type(value) is not bool:
+        raise ConfigPatchError(f"Invalid boolean field: {location}.{key}")
+    return value
 
 
 def _require_non_empty_list(

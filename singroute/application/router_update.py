@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import json
 import posixpath
 import re
 import secrets
 import shlex
+import sys
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from singroute.application.operation import prepare_config_update, summarize_router_outbound
+from singroute.application.operation import (
+    prepare_config_update,
+    summarize_router_outbound,
+)
 from singroute.application.router_client import CommandResult, RouterClient
-
 
 DEFAULT_CONFIG_PATH = "/etc/sing-box/config.json"
 DEFAULT_SERVICE_NAME = "sing-box"
@@ -22,6 +25,7 @@ DEFAULT_SING_BOX_COMMAND = "sing-box"
 INSTALL_IO_ERROR_EXIT = 74
 CONFIG_CHANGED_EXIT = 75
 UPDATE_LOCKED_EXIT = 76
+SERVICE_STABILITY_SECONDS = 3
 _OPERATION_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
@@ -41,6 +45,7 @@ class RouterUpdatePlan:
     original_config_text: str
     updated_config_text: str
     preview: dict[str, Any]
+    has_changes: bool
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,7 @@ class RouterUpdateResult:
     rollback_success: bool | None = None
     backup_deleted: bool = False
     message: str = ""
+    details: str = ""
 
 
 @dataclass(frozen=True)
@@ -60,8 +66,15 @@ class _UpdatePaths:
     operation_directory: str
     temporary_path: str
     backup_path: str
+    install_path: str
     restore_path: str
     lock_path: str
+
+
+@dataclass(frozen=True)
+class _CleanupResult:
+    backup_deleted: bool
+    directory_deleted: bool
 
 
 def prepare_router_update(
@@ -78,6 +91,7 @@ def prepare_router_update(
         original_config_text=original_config_text,
         updated_config_text=_dump_config_text(update.updated_config),
         preview=update.preview,
+        has_changes=update.has_changes,
     )
 
 
@@ -105,31 +119,32 @@ def apply_router_update(
     _validate_operation_id(operation_id)
     paths = _build_update_paths(plan.config_path, now, operation_id)
 
-    current_config_text = router_client.read_text(plan.config_path)
-    if current_config_text != plan.original_config_text:
-        raise RouterConfigChangedError(
-            "Конфиг роутера изменился после подготовки превью. "
-            "Обновите превью и повторите операцию."
-        )
-
+    lock_acquired = False
     operation_directory_created = False
     backup_available = False
-    temporary_pending = False
     validation_result = CommandResult("sing-box check", -1)
     try:
+        _acquire_update_lock(router_client, paths, operation_id)
+        lock_acquired = True
+
+        current_config_text = router_client.read_text(plan.config_path)
+        if current_config_text != plan.original_config_text:
+            raise RouterConfigChangedError(
+                "Конфиг роутера изменился после подготовки превью. "
+                "Обновите превью и повторите операцию."
+            )
+
         _create_operation_directory(router_client, paths.operation_directory)
         operation_directory_created = True
         router_client.write_text(paths.temporary_path, plan.updated_config_text)
-        temporary_pending = True
 
         validation_result = router_client.run(
             f"{shlex.quote(sing_box_command)} check -c "
             f"{shlex.quote(paths.temporary_path)}"
         )
         if validation_result.exit_code != 0:
-            _cleanup_operation_directory(router_client, paths, remove_backup=True)
+            _cleanup_operation_directory(router_client, paths)
             operation_directory_created = False
-            temporary_pending = False
             return RouterUpdateResult(
                 success=False,
                 backup_path=None,
@@ -145,25 +160,14 @@ def apply_router_update(
             _build_guarded_install_command(plan, paths),
         )
         if install_result.exit_code == CONFIG_CHANGED_EXIT:
-            _cleanup_operation_directory(router_client, paths, remove_backup=True)
+            _cleanup_operation_directory(router_client, paths)
             operation_directory_created = False
-            temporary_pending = False
             raise RouterConfigChangedError(
                 "Конфиг роутера изменился во время проверки. "
                 "Изменения не установлены; обновите превью."
             )
-        if install_result.exit_code == UPDATE_LOCKED_EXIT:
-            _cleanup_operation_directory(router_client, paths, remove_backup=True)
-            operation_directory_created = False
-            temporary_pending = False
-            raise RouterUpdateError(
-                "Другой экземпляр SingRoute уже обновляет этот конфиг. "
-                "Дождитесь завершения операции и повторите попытку."
-            )
-
         if install_result.exit_code == 0:
             backup_available = True
-            temporary_pending = False
         else:
             state, backup_available = _reconcile_install_state(
                 plan,
@@ -171,44 +175,34 @@ def apply_router_update(
                 paths,
             )
             if state == "original":
-                _cleanup_operation_directory(router_client, paths, remove_backup=True)
+                _cleanup_operation_directory(router_client, paths)
                 operation_directory_created = False
-                temporary_pending = False
                 raise RouterUpdateError(
-                    _command_failure_message("Новый конфиг не был установлен", install_result)
+                    _command_failure_message(
+                        "Новый конфиг не был установлен", install_result
+                    )
                 )
             if state != "updated" or not backup_available:
-                temporary_pending = False
                 raise RouterUpdateError(
                     "Не удалось однозначно определить состояние конфига после "
                     "потери SSH-ответа. Автоматические действия остановлены; "
                     f"проверьте роутер вручную. Резервная копия: {paths.backup_path}"
                 )
-            temporary_pending = False
 
         service_command = shlex.quote(f"/etc/init.d/{service_name}")
-        restart_result = _run_or_failure(router_client, f"{service_command} restart")
-        status_result = _run_or_failure(router_client, f"{service_command} status")
-        if restart_result.exit_code == 0 and status_result.exit_code == 0:
-            backup_deleted = _cleanup_operation_directory(
-                router_client,
-                paths,
-                remove_backup=True,
-            )
-            operation_directory_created = not backup_deleted
-            message = (
-                "Конфиг обновлён, sing-box успешно перезапущен; "
-                "временная резервная копия удалена."
-                if backup_deleted
-                else "Конфиг обновлён и sing-box успешно перезапущен, но удалить "
-                "временную резервную копию не удалось."
+        if _restart_and_verify_service(router_client, service_command):
+            cleanup = _cleanup_operation_directory(router_client, paths)
+            details = (
+                "Новый конфиг прошёл проверку sing-box; служба успешно "
+                f"перезапущена; {_cleanup_summary(cleanup)}"
             )
             return RouterUpdateResult(
                 success=True,
                 backup_path=paths.backup_path,
                 validation_result=validation_result,
-                backup_deleted=backup_deleted,
-                message=message,
+                backup_deleted=cleanup.backup_deleted,
+                message="Готово — конфиг роутера обновлён.",
+                details=details,
             )
 
         return _rollback_after_service_failure(
@@ -220,9 +214,7 @@ def apply_router_update(
         )
     except Exception as error:
         if operation_directory_created and not backup_available:
-            _cleanup_operation_directory(router_client, paths, remove_backup=True)
-        elif temporary_pending:
-            _remove_file(router_client, paths.temporary_path)
+            _cleanup_operation_directory(router_client, paths)
         if backup_available and not isinstance(error, RouterUpdateError):
             raise RouterUpdateError(
                 "Обновление прервалось после создания резервной копии. "
@@ -230,24 +222,15 @@ def apply_router_update(
                 f"Причина: {error}"
             ) from error
         raise
-
-
-def build_backup_path(
-    config_path: str,
-    now: datetime | None = None,
-    operation_id: str | None = None,
-) -> str:
-    operation_id = operation_id or secrets.token_hex(16)
-    return _build_update_paths(config_path, now, operation_id).backup_path
-
-
-def build_temporary_path(
-    config_path: str,
-    now: datetime | None = None,
-    operation_id: str | None = None,
-) -> str:
-    operation_id = operation_id or secrets.token_hex(16)
-    return _build_update_paths(config_path, now, operation_id).temporary_path
+    finally:
+        if lock_acquired:
+            operation_error = sys.exception()
+            try:
+                _release_update_lock(router_client, paths, operation_id)
+            except RouterUpdateError as lock_error:
+                if operation_error is None:
+                    raise
+                operation_error.add_note(str(lock_error))
 
 
 def _build_update_paths(
@@ -268,6 +251,7 @@ def _build_update_paths(
         operation_directory=operation_directory,
         temporary_path=posixpath.join(operation_directory, "config.new"),
         backup_path=posixpath.join(operation_directory, "config.backup"),
+        install_path=posixpath.join(operation_directory, "config.install"),
         restore_path=posixpath.join(operation_directory, "config.restore"),
         lock_path=posixpath.join(parent, f".{name}.singroute-update.lock"),
     )
@@ -302,30 +286,93 @@ def _create_operation_directory(router_client: RouterClient, path: str) -> None:
     result = router_client.run(command)
     if result.exit_code != 0:
         raise RouterUpdateError(
-            _command_failure_message("Не удалось создать приватный каталог обновления", result)
+            _command_failure_message(
+                "Не удалось создать приватный каталог обновления", result
+            )
+        )
+
+
+def _lock_owner_path(paths: _UpdatePaths) -> str:
+    return posixpath.join(paths.lock_path, "owner")
+
+
+def _acquire_update_lock(
+    router_client: RouterClient,
+    paths: _UpdatePaths,
+    operation_id: str,
+) -> None:
+    owner_path = _lock_owner_path(paths)
+    command = (
+        "umask 077; "
+        f"if ! mkdir {shlex.quote(paths.lock_path)}; then "
+        f"exit {UPDATE_LOCKED_EXIT}; fi; "
+        f"printf '%s\\n' {shlex.quote(operation_id)} > {shlex.quote(owner_path)} "
+        f"|| {{ rmdir {shlex.quote(paths.lock_path)}; "
+        f"exit {INSTALL_IO_ERROR_EXIT}; }}"
+    )
+    result = _run_or_failure(router_client, command)
+    if result.exit_code == UPDATE_LOCKED_EXIT:
+        raise RouterUpdateError(
+            "Другой экземпляр SingRoute уже обновляет этот конфиг. "
+            "Дождитесь завершения операции и повторите попытку."
+        )
+    if result.exit_code != 0:
+        raise RouterUpdateError(
+            _command_failure_message("Не удалось заблокировать конфиг", result)
+        )
+
+
+def _release_update_lock(
+    router_client: RouterClient,
+    paths: _UpdatePaths,
+    operation_id: str,
+) -> None:
+    owner_path = _lock_owner_path(paths)
+    command = (
+        f'if [ "$(cat {shlex.quote(owner_path)} 2>/dev/null)" = '
+        f"{shlex.quote(operation_id)} ]; then "
+        f"rm -f {shlex.quote(owner_path)} && rmdir {shlex.quote(paths.lock_path)}; "
+        "else exit 1; fi"
+    )
+    result = _run_or_failure(router_client, command)
+    if result.exit_code != 0:
+        raise RouterUpdateError(
+            "Операция с конфигом завершилась, но служебную блокировку снять "
+            f"не удалось: {paths.lock_path}. Перед повторным обновлением "
+            "убедитесь, что другой экземпляр SingRoute не работает, и удалите "
+            "блокировку вручную."
         )
 
 
 def _build_guarded_install_command(plan: RouterUpdatePlan, paths: _UpdatePaths) -> str:
-    expected_digest = hashlib.sha256(
+    expected_original_digest = hashlib.sha256(
         plan.original_config_text.encode("utf-8")
     ).hexdigest()
-    lock_cleanup = f"rmdir {shlex.quote(paths.lock_path)} >/dev/null 2>&1"
+    expected_updated_digest = hashlib.sha256(
+        plan.updated_config_text.encode("utf-8")
+    ).hexdigest()
     return (
         "umask 077; "
-        f"if ! mkdir {shlex.quote(paths.lock_path)}; then "
-        f"exit {UPDATE_LOCKED_EXIT}; fi; "
-        f"trap {shlex.quote(lock_cleanup)} 0 1 2 15; "
         f"cp -p {shlex.quote(plan.config_path)} {shlex.quote(paths.backup_path)} "
         f"|| exit {INSTALL_IO_ERROR_EXIT}; "
         f"actual=$(sha256sum {shlex.quote(paths.backup_path)}) "
         f"|| exit {INSTALL_IO_ERROR_EXIT}; "
-        'actual=${actual%% *}; '
-        f"if [ \"$actual\" != {shlex.quote(expected_digest)} ]; then "
+        "actual=${actual%% *}; "
+        f'if [ "$actual" != {shlex.quote(expected_original_digest)} ]; then '
         f"rm -f {shlex.quote(paths.backup_path)}; "
         f"exit {CONFIG_CHANGED_EXIT}; fi; "
-        f"mv -f {shlex.quote(paths.temporary_path)} "
-        f"{shlex.quote(plan.config_path)} || exit {INSTALL_IO_ERROR_EXIT}"
+        f"cp -p {shlex.quote(paths.backup_path)} {shlex.quote(paths.install_path)} "
+        f"|| exit {INSTALL_IO_ERROR_EXIT}; "
+        f"cat {shlex.quote(paths.temporary_path)} > {shlex.quote(paths.install_path)} "
+        f"|| exit {INSTALL_IO_ERROR_EXIT}; "
+        f"actual=$(sha256sum {shlex.quote(paths.install_path)}) "
+        f"|| exit {INSTALL_IO_ERROR_EXIT}; "
+        "actual=${actual%% *}; "
+        f'if [ "$actual" != {shlex.quote(expected_updated_digest)} ]; then '
+        f"rm -f {shlex.quote(paths.install_path)}; "
+        f"exit {INSTALL_IO_ERROR_EXIT}; fi; "
+        f"mv -f {shlex.quote(paths.install_path)} {shlex.quote(plan.config_path)} "
+        f"|| exit {INSTALL_IO_ERROR_EXIT}"
     )
 
 
@@ -356,24 +403,36 @@ def _file_exists(router_client: RouterClient, path: str) -> bool:
 def _cleanup_operation_directory(
     router_client: RouterClient,
     paths: _UpdatePaths,
-    *,
-    remove_backup: bool,
-) -> bool:
+) -> _CleanupResult:
     cleanup_ok = True
-    for path in (paths.temporary_path, paths.restore_path):
+    for path in (paths.temporary_path, paths.install_path, paths.restore_path):
         cleanup_ok = _remove_file(router_client, path).exit_code == 0 and cleanup_ok
-    if remove_backup and cleanup_ok:
-        cleanup_ok = (
-            _remove_file(router_client, paths.backup_path).exit_code == 0
-            and cleanup_ok
-        )
-    if remove_backup and cleanup_ok:
+    backup_deleted = False
+    if cleanup_ok:
+        backup_deleted = _remove_file(router_client, paths.backup_path).exit_code == 0
+        cleanup_ok = backup_deleted
+    directory_deleted = False
+    if cleanup_ok:
         result = _run_or_failure(
             router_client,
             f"rmdir {shlex.quote(paths.operation_directory)}",
         )
-        cleanup_ok = result.exit_code == 0 and cleanup_ok
-    return cleanup_ok
+        directory_deleted = result.exit_code == 0
+    return _CleanupResult(
+        backup_deleted=backup_deleted,
+        directory_deleted=directory_deleted,
+    )
+
+
+def _cleanup_summary(result: _CleanupResult) -> str:
+    if result.directory_deleted:
+        return "временные файлы удалены."
+    if result.backup_deleted:
+        return (
+            "резервная копия удалена, но каталог обновления очистить полностью "
+            "не удалось."
+        )
+    return "временную резервную копию удалить не удалось."
 
 
 def _remove_file(router_client: RouterClient, path: str) -> CommandResult:
@@ -390,6 +449,23 @@ def _run_or_failure(router_client: RouterClient, command: str) -> CommandResult:
         return router_client.run(command)
     except Exception as error:
         return CommandResult(command=command, exit_code=-1, stderr=str(error))
+
+
+def _restart_and_verify_service(
+    router_client: RouterClient,
+    service_command: str,
+) -> bool:
+    restart_result = _run_or_failure(router_client, f"{service_command} restart")
+    if restart_result.exit_code != 0:
+        return False
+    status_result = _run_or_failure(router_client, f"{service_command} status")
+    if status_result.exit_code != 0:
+        return False
+    stable_status_result = _run_or_failure(
+        router_client,
+        f"sleep {SERVICE_STABILITY_SECONDS}; {service_command} status",
+    )
+    return stable_status_result.exit_code == 0
 
 
 def _rollback_after_service_failure(
@@ -410,7 +486,9 @@ def _rollback_after_service_failure(
     restored = restore_result.exit_code == 0
     if not restored:
         try:
-            restored = router_client.read_text(plan.config_path) == plan.original_config_text
+            restored = (
+                router_client.read_text(plan.config_path) == plan.original_config_text
+            )
         except Exception:
             restored = False
     if not restored:
@@ -421,32 +499,14 @@ def _rollback_after_service_failure(
             f"Причина: {_command_failure_message('ошибка восстановления', restore_result)}"
         )
 
-    rollback_restart_result = _run_or_failure(
-        router_client,
-        f"{service_command} restart",
-    )
-    rollback_status_result = _run_or_failure(
-        router_client,
-        f"{service_command} status",
-    )
-    rollback_success = (
-        rollback_restart_result.exit_code == 0
-        and rollback_status_result.exit_code == 0
-    )
+    rollback_success = _restart_and_verify_service(router_client, service_command)
 
     if rollback_success:
-        backup_deleted = _cleanup_operation_directory(
-            router_client,
-            paths,
-            remove_backup=True,
-        )
+        cleanup = _cleanup_operation_directory(router_client, paths)
+        backup_deleted = cleanup.backup_deleted
         message = (
             "sing-box не запустился с новым конфигом. Предыдущий конфиг "
-            "автоматически восстановлен; временная резервная копия удалена."
-            if backup_deleted
-            else "sing-box не запустился с новым конфигом. Предыдущий конфиг "
-            "автоматически восстановлен, но удалить временную резервную "
-            "копию не удалось."
+            f"автоматически восстановлен; {_cleanup_summary(cleanup)}"
         )
     else:
         backup_deleted = False

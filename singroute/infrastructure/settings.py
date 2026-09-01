@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from configparser import ConfigParser
-from dataclasses import dataclass, field
-from pathlib import Path
 import os
 import sys
+from collections.abc import Mapping
+from configparser import ConfigParser
+from configparser import Error as ConfigParserError
+from contextlib import suppress
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from singroute.application.router_update import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_SERVICE_NAME,
 )
-
 
 SETTINGS_FILENAME = "SingRoute.ini"
 LEGACY_SETTINGS_FILENAME = "singbox-outbound-updater.ini"
@@ -61,35 +63,31 @@ class PortableSettingsStore:
         parser = _new_parser()
         try:
             parser.read(source_path, encoding="utf-8")
-        except (OSError, UnicodeError):
+        except (OSError, UnicodeError, ConfigParserError):
             return settings
 
-        connection = parser["connection"] if parser.has_section("connection") else {}
-        application = parser["application"] if parser.has_section("application") else {}
+        connection: Mapping[str, str] = (
+            parser["connection"] if parser.has_section("connection") else {}
+        )
+        application: Mapping[str, str] = (
+            parser["application"] if parser.has_section("application") else {}
+        )
 
         settings.host = _text(connection, "host", settings.host)
         settings.port = _bounded_int(connection, "port", settings.port, 1, 65535)
         settings.username = _text(connection, "username", settings.username)
-        settings.config_path = _text(
-            connection, "config_path", settings.config_path
-        )
-        settings.service_name = _text(
-            connection, "service_name", settings.service_name
-        )
+        settings.config_path = _text(connection, "config_path", settings.config_path)
+        settings.service_name = _text(connection, "service_name", settings.service_name)
         auth_mode = _text(connection, "auth_mode", settings.auth_mode)
         settings.auth_mode = auth_mode if auth_mode in VALID_AUTH_MODES else "auto"
         settings.identity_file = _text(connection, "identity_file", "")
-        settings.remember_password = _boolean(
-            connection, "remember_password", False
-        )
+        settings.remember_password = _boolean(connection, "remember_password", False)
         settings.auto_connect = _boolean(connection, "auto_connect", False)
         settings.check_updates_on_startup = _boolean(
             application, "check_updates_on_startup", True
         )
 
-        settings.last_import_directory = _text(
-            application, "last_import_directory", ""
-        )
+        settings.last_import_directory = _text(application, "last_import_directory", "")
         settings.window_width = _bounded_int(
             application, "window_width", settings.window_width, 640, 4096
         )
@@ -129,10 +127,8 @@ class PortableSettingsStore:
                 parser.write(stream)
             os.replace(temporary_path, self.path)
         except OSError as error:
-            try:
+            with suppress(OSError):
                 temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
             raise OSError(
                 f"Не удалось сохранить настройки рядом с программой: {self.path}: {error}"
             ) from error
@@ -150,34 +146,27 @@ def _new_parser() -> ConfigParser:
     return parser
 
 
-def _text(section: object, key: str, default: str) -> str:
-    try:
-        value = section.get(key, default)  # type: ignore[attr-defined]
-    except Exception:
-        return default
-    value = str(value).strip()
+def _text(section: Mapping[str, str], key: str, default: str) -> str:
+    value = section.get(key, default).strip()
     return value or default
 
 
 def _bounded_int(
-    section: object,
+    section: Mapping[str, str],
     key: str,
     default: int,
     minimum: int,
     maximum: int,
 ) -> int:
     try:
-        value = int(section.get(key, str(default)))  # type: ignore[attr-defined]
-    except (TypeError, ValueError, AttributeError):
+        value = int(section.get(key, str(default)))
+    except (TypeError, ValueError):
         return default
     return value if minimum <= value <= maximum else default
 
 
-def _boolean(section: object, key: str, default: bool) -> bool:
-    try:
-        value = str(section.get(key, str(default))).strip().lower()  # type: ignore[attr-defined]
-    except Exception:
-        return default
+def _boolean(section: Mapping[str, str], key: str, default: bool) -> bool:
+    value = section.get(key, str(default)).strip().lower()
     if value in {"1", "yes", "true", "on"}:
         return True
     if value in {"0", "no", "false", "off"}:

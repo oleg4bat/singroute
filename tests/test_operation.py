@@ -8,6 +8,7 @@ from singroute.application.operation import (
     summarize_router_outbound,
 )
 from singroute.core.errors import ConfigParseError, ConfigPatchError
+from singroute.core.preview import summarize_outbound
 
 
 def test_summarize_router_outbound_masks_current_router_secrets():
@@ -69,9 +70,7 @@ def test_prepare_config_update_accepts_imported_and_router_config_strings():
     current_router_config_content = json.dumps(
         {
             "dns": {"servers": ["1.1.1.1"]},
-            "outbounds": [
-                {"type": "hysteria2", "tag": "router", "server": "old.test"}
-            ],
+            "outbounds": [{"type": "hysteria2", "tag": "router", "server": "old.test"}],
         }
     )
 
@@ -98,11 +97,7 @@ def test_prepare_config_update_preview_contains_old_and_new_outbound_summaries()
             }
         ),
         json.dumps(
-            {
-                "outbounds": [
-                    {"type": "vless", "tag": "router", "server": "old.test"}
-                ]
-            }
+            {"outbounds": [{"type": "vless", "tag": "router", "server": "old.test"}]}
         ),
     )
 
@@ -116,6 +111,71 @@ def test_prepare_config_update_preview_contains_old_and_new_outbound_summaries()
         "tag": "router",
         "server": "new.test",
     }
+
+
+def test_prepare_config_update_detects_secret_only_change_before_masking():
+    result = prepare_config_update(
+        json.dumps(
+            {
+                "outbounds": [
+                    {
+                        "type": "hysteria2",
+                        "tag": "imported",
+                        "server": "vpn.test",
+                        "password": "new-secret",
+                    }
+                ]
+            }
+        ),
+        json.dumps(
+            {
+                "outbounds": [
+                    {
+                        "type": "hysteria2",
+                        "tag": "router",
+                        "server": "vpn.test",
+                        "password": "old-secret",
+                    }
+                ]
+            }
+        ),
+    )
+
+    assert result.preview["old_outbound"] == result.preview["new_outbound"]
+    assert result.has_changes is True
+
+
+def test_prepare_config_update_reports_identical_outbound_as_unchanged():
+    outbound = {
+        "type": "hysteria2",
+        "tag": "proxy",
+        "server": "vpn.test",
+        "password": "same-secret",
+    }
+
+    result = prepare_config_update(
+        json.dumps({"outbounds": [outbound]}),
+        json.dumps({"outbounds": [outbound]}),
+    )
+
+    assert result.has_changes is False
+
+
+def test_summarize_outbound_returns_independent_nested_containers():
+    outbound = {
+        "type": "vless",
+        "server": "vpn.test",
+        "uuid": "secret",
+        "tls": {"alpn": ["h2"]},
+    }
+
+    summary = summarize_outbound(outbound)
+    summary["tls"]["alpn"].append("h3")
+
+    assert outbound["tls"]["alpn"] == ["h2"]
+    assert summary["uuid"] == "***"
+
+
 def test_prepare_config_update_wraps_invalid_imported_json():
     with pytest.raises(
         ConfigParseError,
@@ -164,7 +224,9 @@ def test_prepare_config_update_uses_first_supported_exported_proxy():
             ]
         }
     )
-    router_config_text = json.dumps({"outbounds": [{"type": "direct", "tag": "router"}]})
+    router_config_text = json.dumps(
+        {"outbounds": [{"type": "direct", "tag": "router"}]}
+    )
 
     result = prepare_config_update(exported_config_text, router_config_text)
     updated_config = result.updated_config
@@ -174,6 +236,8 @@ def test_prepare_config_update_uses_first_supported_exported_proxy():
         "tag": "router",
         "server": "vpn.test",
     }
+
+
 def test_prepare_config_update_rejects_non_list_router_outbounds():
     with pytest.raises(ConfigPatchError, match=r'router_config\["outbounds"\].*list'):
         prepare_config_update(

@@ -3,12 +3,9 @@ $ErrorActionPreference = "Stop"
 poetry run pyinstaller `
     --noconfirm `
     --clean `
-    --onefile `
-    --windowed `
-    --name SingRoute `
-    --copy-metadata singroute `
-    --hidden-import keyring.backends.Windows `
-    main.py
+    --distpath dist `
+    --workpath build `
+    installer\SingRoute.spec
 
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE"

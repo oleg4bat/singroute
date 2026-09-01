@@ -5,24 +5,31 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .converters import normalize_outbound_to_singbox
 from .errors import ConfigPatchError
 
-
 SERVICE_OUTBOUND_TYPES = {"direct", "block", "dns", "selector", "urltest"}
-SERVICE_XRAY_PROTOCOLS = {"freedom", "blackhole", "dns"}
 SUPPORTED_XRAY_PROTOCOLS = {"vless", "hysteria"}
 
 
 def select_exported_outbound(
     exported_config: dict[str, Any],
 ) -> dict[str, Any]:
-    """Return a copy of the first supported proxy outbound."""
+    """Return the first valid supported proxy normalized for sing-box."""
     outbounds = _get_exported_outbounds(exported_config)
+    first_invalid_error: ConfigPatchError | None = None
 
     for index, outbound in enumerate(outbounds):
         _ensure_outbound_dict(outbound, index)
-        if _is_supported_proxy_outbound(outbound):
-            return deepcopy(outbound)
+        if not _is_supported_proxy_outbound(outbound):
+            continue
+        try:
+            return normalize_outbound_to_singbox(outbound)
+        except ConfigPatchError as error:
+            first_invalid_error = first_invalid_error or error
+
+    if first_invalid_error is not None:
+        raise first_invalid_error
 
     raise ConfigPatchError(
         "exported_config не содержит поддерживаемый proxy outbound "
@@ -58,41 +65,7 @@ def _is_supported_proxy_outbound(outbound: dict[str, Any]) -> bool:
 
     protocol = outbound.get("protocol")
     if isinstance(protocol, str):
-        if protocol in SERVICE_XRAY_PROTOCOLS:
-            return False
-        if protocol not in SUPPORTED_XRAY_PROTOCOLS:
-            return False
-        return _is_supported_xray_protocol_outbound(outbound, protocol)
-
-    return False
-
-
-def _is_supported_xray_protocol_outbound(
-    outbound: dict[str, Any],
-    protocol: str,
-) -> bool:
-    if protocol == "vless":
-        stream_settings = outbound.get("streamSettings")
-        if not isinstance(stream_settings, dict):
-            return False
-        return (
-            stream_settings.get("network") == "tcp"
-            and stream_settings.get("security") == "reality"
-        )
-
-    if protocol == "hysteria":
-        settings = outbound.get("settings")
-        stream_settings = outbound.get("streamSettings", {})
-        if stream_settings is None:
-            stream_settings = {}
-        if not isinstance(settings, dict) or not isinstance(stream_settings, dict):
-            return False
-        hysteria_settings = stream_settings.get("hysteriaSettings", {})
-        if hysteria_settings is None:
-            hysteria_settings = {}
-        if not isinstance(hysteria_settings, dict):
-            return False
-        return settings.get("version") == 2 or hysteria_settings.get("version") == 2
+        return protocol in SUPPORTED_XRAY_PROTOCOLS
 
     return False
 

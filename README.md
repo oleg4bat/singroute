@@ -51,9 +51,8 @@ may contain secrets.
 By default, SingRoute checks the official latest GitHub release at startup.
 Startup checks can be disabled in advanced settings, and a manual check remains
 available from the button at the top of the main window. After explicit user
-confirmation, the portable build downloads the exact official executable and
-checksum assets. It requires the checksum, GitHub asset digest, and downloaded
-file hash to agree before installation.
+confirmation, the portable build downloads the exact official executable. Its
+SHA-256 hash must match the digest published by GitHub before installation.
 
 The verified file is staged next to `SingRoute.exe`. A background Windows helper
 then closes SingRoute, waits for all PyInstaller file locks to disappear,
@@ -61,6 +60,24 @@ replaces the executable with rollback protection, and starts SingRoute again.
 Version 0.3.3 adds this complete automatic replacement and restart flow.
 Version 0.3.5 fixes helper startup from the frozen application and requires a
 readiness signal before SingRoute closes, preventing silent failed updates.
+Version 0.3.6 keeps the previous executable until the updated GUI reports
+readiness and remains stable. A failed update is stopped, rolled back, and the
+restored version is checked after restart. It also starts both executables in an
+independent PyInstaller environment so they cannot reuse the old process's
+already-removed temporary extraction. Releases deliberately do not publish the
+legacy `.sha256` sidecar: SingRoute 0.3.5 and older must not enter their unsafe
+automatic replacement path.
+
+Version 0.4.0 improves updater diagnostics, reports retained rollback files that
+would block the next automatic update, and distinguishes application-update
+operations from router configuration changes in the interface.
+
+**The first upgrade from SingRoute 0.3.5 or older to 0.3.6 must be manual:** close
+all SingRoute processes, download the official `SingRoute.exe`, and replace the
+old file under that exact name. Do not leave the new version beside it under a
+different name. Installation logic always comes from the version that is already
+running, so only later updates started from 0.3.6 receive the new health check
+and rollback protection.
 
 Default connection settings:
 
@@ -92,12 +109,15 @@ confirmed public key is stored in the INI file and is the application's only
 trust source for that router; a later key change blocks the connection.
 
 Version 0.3.1 also uses a private randomized remote operation directory, an
-atomic update lock, and a hash comparison immediately before installation. It
-reconciles ambiguous SSH failures before deciding whether to restart or roll
-back, limits imported configuration and SSH I/O to 8 MiB, masks a broader set
-of secret fields, and removes stale Windows credentials when connection
-identity changes. Configuration installation cannot be cancelled halfway
-through, preserving the automatic rollback path.
+atomic update lock held through service verification or rollback, and a hash
+comparison immediately before installation. Replacement preserves the original
+config owner and mode. SingRoute checks service status immediately and again
+after a stability delay before deleting the backup. It reconciles ambiguous SSH
+failures before deciding whether to restart or roll back, limits imported
+configuration and SSH I/O to 8 MiB, masks a broader set of secret fields, and
+removes stale Windows credentials when connection identity changes.
+Configuration installation cannot be cancelled halfway through, preserving the
+automatic rollback path.
 
 ## Development
 
@@ -106,7 +126,9 @@ SingRoute requires Python 3.11–3.14 and Poetry.
 ```powershell
 poetry config virtualenvs.in-project true --local
 poetry install
-poetry run pytest
+poetry run ruff check .
+poetry run ruff format --check .
+poetry run pytest -q --cov=singroute --cov-report=term-missing
 poetry run pip-audit
 poetry run python main.py
 ```
@@ -123,20 +145,39 @@ The portable executable is written to:
 dist\SingRoute.exe
 ```
 
+Verify the packaged executable and its complete replacement/rollback lifecycle:
+
+```powershell
+.\scripts\e2e_test_portable_update.ps1 dist\SingRoute.exe
+```
+
+The E2E test builds a temporary frozen previous version, streams the production
+EXE through the real download/staging code, installs it through the real Windows
+helper, and confirms that the new GUI starts and remains running. Beforehand it
+extracts `update.ps1` from the production PyInstaller archive and compares it
+byte-for-byte with the source resource. It then installs a deliberately
+unsuitable EXE and confirms that the previous frozen version is restored and
+running. All test executables and processes live in a unique temporary
+directory.
+
 ## Release
 
 The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.3.5 -m "Release v0.3.5"
-git push origin v0.3.5
+git tag -a v0.4.0 -m "Release v0.4.0"
+git push origin v0.4.0
 ```
 
-The `Release` workflow validates the metadata, audits Python dependencies, runs
-the Windows test suite, builds `SingRoute.exe`, generates its SHA-256 checksum
-and build attestation, and publishes the files to GitHub Releases. A tag that
-does not match the project version fails before publication.
+The `Release` workflow validates metadata and formatting, audits Python
+dependencies, runs the Windows test suite with branch coverage (minimum 70%),
+builds `SingRoute.exe`, runs both packaged executable tests, generates its
+build attestation, and publishes the executable to GitHub Releases. A tag that
+does not match the project version fails before publication. Current versions
+verify the SHA-256 digest supplied by GitHub directly; legacy checksum sidecars
+are intentionally omitted so SingRoute 0.3.5 and older require a manual first
+upgrade.
 
 ## License
 

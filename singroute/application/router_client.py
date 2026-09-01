@@ -21,8 +21,5 @@ class RouterClient(Protocol):
     def write_text(self, path: str, content: str) -> None:
         """Write text to a router file."""
 
-    def copy_file(self, source_path: str, target_path: str) -> None:
-        """Copy a router file on the router."""
-
     def run(self, command: str) -> CommandResult:
         """Run a router command and return its process result."""

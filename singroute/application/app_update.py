@@ -2,39 +2,38 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextlib import suppress
-from dataclasses import dataclass
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-
 LATEST_RELEASE_API = "https://api.github.com/repos/oleg4bat/singroute/releases/latest"
 EXECUTABLE_ASSET_NAME = "SingRoute.exe"
-CHECKSUM_ASSET_NAME = "SingRoute.exe.sha256"
 MAX_METADATA_BYTES = 1_048_576
 MAX_EXECUTABLE_BYTES = 250 * 1_048_576
 REQUEST_TIMEOUT_SECONDS = 15
 HELPER_START_TIMEOUT_SECONDS = 5
+UPDATE_HEALTH_FILENAME = ".SingRoute.update-health"
+UPDATE_ERROR_MAX_BYTES = 64 * 1024
+_UPDATE_HEALTH_PATH_ENV = "SINGROUTE_UPDATE_HEALTH_PATH"
+_UPDATE_HEALTH_TOKEN_ENV = "SINGROUTE_UPDATE_HEALTH_TOKEN"
 _VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 _DIGEST_PATTERN = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
-_CHECKSUM_PATTERN = re.compile(
-    rf"^([0-9a-fA-F]{{64}})\s+\*?{re.escape(EXECUTABLE_ASSET_NAME)}$"
-)
+_HEALTH_TOKEN_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE_PAGE_PREFIX = "https://github.com/oleg4bat/singroute/releases/tag/"
-_RELEASE_DOWNLOAD_PREFIX = (
-    "https://github.com/oleg4bat/singroute/releases/download/"
-)
+_RELEASE_DOWNLOAD_PREFIX = "https://github.com/oleg4bat/singroute/releases/download/"
 
 
 class AppUpdateError(RuntimeError):
@@ -47,7 +46,6 @@ class ReleaseInfo:
     tag: str
     page_url: str
     executable_url: str
-    checksum_url: str
     executable_digest: str
 
 
@@ -101,16 +99,7 @@ def stage_update(
     if not target_path.is_file():
         raise AppUpdateError(f"Текущий файл программы не найден: {target_path}")
 
-    checksum_bytes = _read_bytes(
-        release.checksum_url,
-        MAX_METADATA_BYTES,
-        opener,
-    )
-    expected_digest = _parse_checksum(checksum_bytes)
-    if expected_digest != release.executable_digest:
-        raise AppUpdateError(
-            "Контрольная сумма релиза не совпадает с digest, опубликованным GitHub."
-        )
+    expected_digest = release.executable_digest
 
     staged_path = target_path.with_name(
         f".{target_path.stem}.update-v{release.version}{target_path.suffix}"
@@ -151,24 +140,34 @@ def stage_update(
 def launch_staged_update(staged: StagedUpdate, process_id: int | None = None) -> None:
     """Launch a helper that replaces the EXE after all locks disappear."""
     if sys.platform != "win32":
-        raise AppUpdateError("Автоматическая установка поддерживается только в Windows.")
-    expected_staged_path = staged.target_path.with_name(
-        f".{staged.target_path.stem}.update-v{staged.release.version}"
-        f"{staged.target_path.suffix}"
+        raise AppUpdateError(
+            "Автоматическая установка поддерживается только в Windows."
+        )
+    target_path = staged.target_path.resolve()
+    executable_path = staged.executable_path.resolve()
+    if (
+        target_path.name.casefold() != EXECUTABLE_ASSET_NAME.casefold()
+        or not target_path.is_file()
+    ):
+        raise AppUpdateError(f"Текущий файл программы не найден: {target_path}")
+    expected_staged_path = target_path.with_name(
+        f".{target_path.stem}.update-v{staged.release.version}{target_path.suffix}"
     )
-    if staged.executable_path.resolve() != expected_staged_path.resolve():
+    if executable_path != expected_staged_path:
         raise AppUpdateError("Некорректный путь подготовленного обновления.")
-    if not staged.executable_path.is_file():
-        raise AppUpdateError(f"Загруженное обновление не найдено: {staged.executable_path}")
-    if _hash_file(staged.executable_path) != staged.expected_digest:
-        staged.executable_path.unlink(missing_ok=True)
+    if not executable_path.is_file():
+        raise AppUpdateError(f"Загруженное обновление не найдено: {executable_path}")
+    if _hash_file(executable_path) != staged.expected_digest:
+        executable_path.unlink(missing_ok=True)
         raise AppUpdateError(
             "Подготовленное обновление изменилось после загрузки и было удалено."
         )
 
-    backup_path = _backup_path(staged.target_path)
-    error_path = _error_path(staged.target_path)
-    ready_path = staged.target_path.with_name(".SingRoute.update-ready")
+    backup_path = _backup_path(target_path)
+    error_path = _error_path(target_path)
+    ready_path = target_path.with_name(".SingRoute.update-ready")
+    health_path = target_path.with_name(UPDATE_HEALTH_FILENAME)
+    health_token = secrets.token_hex(32)
     if backup_path.exists():
         raise AppUpdateError(
             f"Обнаружена резервная копия прошлого обновления: {backup_path}. "
@@ -176,9 +175,11 @@ def launch_staged_update(staged: StagedUpdate, process_id: int | None = None) ->
         )
     error_path.unlink(missing_ok=True)
     ready_path.unlink(missing_ok=True)
+    health_path.unlink(missing_ok=True)
+    powershell_path = _powershell_executable()
     script_path = _write_installer_script()
     command = [
-        str(_powershell_executable()),
+        str(powershell_path),
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
@@ -189,21 +190,29 @@ def launch_staged_update(staged: StagedUpdate, process_id: int | None = None) ->
         "-File",
         str(script_path),
         "-SingRouteProcessId",
-        str(process_id or os.getpid()),
+        str(os.getpid() if process_id is None else process_id),
+        "-SingRouteParentProcessId",
+        str(os.getppid()),
         "-StagedPath",
-        str(staged.executable_path),
+        str(executable_path),
         "-TargetPath",
-        str(staged.target_path),
+        str(target_path),
         "-BackupPath",
         str(backup_path),
         "-ErrorPath",
         str(error_path),
         "-ReadyPath",
         str(ready_path),
+        "-HealthPath",
+        str(health_path),
+        "-HealthToken",
+        health_token,
         "-ScriptPath",
         str(script_path),
     ]
+    previous_dll_directory: str | None = None
     try:
+        previous_dll_directory = _clear_frozen_windows_dll_directory()
         helper_process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -215,7 +224,13 @@ def launch_staged_update(staged: StagedUpdate, process_id: int | None = None) ->
     except OSError as error:
         with suppress(OSError):
             script_path.unlink(missing_ok=True)
-        raise AppUpdateError(f"Не удалось запустить установщик обновления: {error}") from error
+        raise AppUpdateError(
+            f"Не удалось запустить установщик обновления: {error}"
+        ) from error
+    finally:
+        if previous_dll_directory is not None:
+            with suppress(OSError):
+                _set_windows_dll_directory(previous_dll_directory)
 
     deadline = time.monotonic() + HELPER_START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -225,9 +240,11 @@ def launch_staged_update(staged: StagedUpdate, process_id: int | None = None) ->
         if exit_code is not None:
             with suppress(OSError):
                 script_path.unlink(missing_ok=True)
+            helper_error = take_update_error(target_path)
+            details = f"\n\n{helper_error}" if helper_error else ""
             raise AppUpdateError(
                 "Установщик обновления не смог запуститься "
-                f"(код {exit_code}). SingRoute остаётся открытым."
+                f"(код {exit_code}). SingRoute остаётся открытым.{details}"
             )
         time.sleep(0.05)
 
@@ -243,9 +260,11 @@ def launch_staged_update(staged: StagedUpdate, process_id: int | None = None) ->
         ready_path.unlink(missing_ok=True)
     with suppress(OSError):
         script_path.unlink(missing_ok=True)
+    helper_error = take_update_error(target_path)
+    details = f"\n\n{helper_error}" if helper_error else ""
     raise AppUpdateError(
-        "Установщик обновления не подтвердил запуск. "
-        "SingRoute остаётся открытым."
+        "Установщик обновления не подтвердил запуск. SingRoute остаётся "
+        f"открытым.{details}"
     )
 
 
@@ -261,13 +280,70 @@ def current_executable_path() -> Path:
     return Path(sys.executable).resolve()
 
 
+def signal_update_health() -> bool:
+    """Confirm that the updated GUI reached its event loop."""
+    raw_path = os.environ.pop(_UPDATE_HEALTH_PATH_ENV, "")
+    token = os.environ.pop(_UPDATE_HEALTH_TOKEN_ENV, "")
+    if not raw_path and not token:
+        return False
+    if not raw_path or _HEALTH_TOKEN_PATTERN.fullmatch(token) is None:
+        return False
+
+    expected_path = current_executable_path().with_name(UPDATE_HEALTH_FILENAME)
+    try:
+        health_path = Path(raw_path).resolve()
+    except OSError:
+        return False
+    if health_path != expected_path:
+        return False
+    try:
+        health_path.write_text(token, encoding="ascii")
+    except OSError:
+        return False
+    return True
+
+
+def take_update_error(target_path: Path | None = None) -> str | None:
+    """Read and remove the helper error left before a rollback restart."""
+    target = (target_path or current_executable_path()).resolve()
+    error_path = _error_path(target)
+    try:
+        with error_path.open("rb") as stream:
+            raw = stream.read(UPDATE_ERROR_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+    with suppress(OSError):
+        error_path.unlink(missing_ok=True)
+    truncated = len(raw) > UPDATE_ERROR_MAX_BYTES
+    text = raw[:UPDATE_ERROR_MAX_BYTES].decode("utf-8", errors="replace").strip()
+    if not text:
+        text = "Установщик обновления завершился с неизвестной ошибкой."
+    if truncated:
+        text += "\n\nСообщение об ошибке сокращено."
+    return text
+
+
+def retained_update_backup_path(target_path: Path | None = None) -> Path | None:
+    """Return a retained previous EXE that blocks the next automatic update."""
+    target = (target_path or current_executable_path()).resolve()
+    backup_path = _backup_path(target)
+    return backup_path if backup_path.is_file() else None
+
+
 def _parse_release(payload: Any) -> ReleaseInfo:
     if not isinstance(payload, dict):
         raise AppUpdateError("GitHub вернул некорректное описание релиза.")
     tag = payload.get("tag_name")
     page_url = payload.get("html_url")
     assets = payload.get("assets")
-    if not isinstance(tag, str) or not isinstance(page_url, str) or not isinstance(assets, list):
+    if (
+        not isinstance(tag, str)
+        or not isinstance(page_url, str)
+        or not isinstance(assets, list)
+    ):
         raise AppUpdateError("В описании релиза отсутствуют обязательные поля.")
     version_tuple = _parse_version(tag, "тега релиза")
     if page_url != f"{_RELEASE_PAGE_PREFIX}{tag}":
@@ -290,11 +366,8 @@ def _parse_release(payload: Any) -> ReleaseInfo:
             asset_data[name] = (url, digest if isinstance(digest, str) else None)
     try:
         executable_url, raw_digest = asset_data[EXECUTABLE_ASSET_NAME]
-        checksum_url, _ = asset_data[CHECKSUM_ASSET_NAME]
     except KeyError as error:
-        raise AppUpdateError(
-            "В последнем релизе отсутствуют SingRoute.exe или файл проверки."
-        ) from error
+        raise AppUpdateError("В последнем релизе отсутствует SingRoute.exe.") from error
     digest_match = _DIGEST_PATTERN.fullmatch(raw_digest or "")
     if digest_match is None:
         raise AppUpdateError("GitHub не опубликовал корректный digest обновления.")
@@ -305,30 +378,16 @@ def _parse_release(payload: Any) -> ReleaseInfo:
         tag=tag,
         page_url=page_url,
         executable_url=executable_url,
-        checksum_url=checksum_url,
         executable_digest=digest_match.group(1).lower(),
     )
-
-
-def _parse_checksum(value: bytes) -> str:
-    try:
-        text = value.decode("ascii", errors="strict")
-    except UnicodeDecodeError as error:
-        raise AppUpdateError("Файл проверки релиза имеет неожиданный формат.") from error
-    lines = [line for line in text.splitlines() if line]
-    if len(lines) != 1:
-        raise AppUpdateError("Файл проверки релиза имеет неожиданный формат.")
-    match = _CHECKSUM_PATTERN.fullmatch(lines[0])
-    if match is None:
-        raise AppUpdateError("Файл проверки релиза имеет неожиданный формат.")
-    return match.group(1).lower()
 
 
 def _parse_version(value: str, label: str) -> tuple[int, int, int]:
     match = _VERSION_PATTERN.fullmatch(value.strip())
     if match is None:
         raise AppUpdateError(f"Некорректный формат {label}: {value!r}")
-    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+    major, minor, patch = match.groups()
+    return int(major), int(minor), int(patch)
 
 
 def _read_json(url: str, opener: UrlOpener) -> Any:
@@ -344,7 +403,9 @@ def _read_bytes(url: str, limit: int, opener: UrlOpener) -> bytes:
         with _open_url(url, opener) as response:
             data = response.read(limit + 1)
     except (HTTPError, URLError, OSError) as error:
-        raise AppUpdateError(f"Не удалось загрузить данные обновления: {error}") from error
+        raise AppUpdateError(
+            f"Не удалось загрузить данные обновления: {error}"
+        ) from error
     if len(data) > limit:
         raise AppUpdateError("Ответ сервера обновлений превышает допустимый размер.")
     return data
@@ -357,10 +418,9 @@ def _download_file(
     opener: UrlOpener,
 ) -> str:
     digest = hashlib.sha256()
-    total = 0
     try:
         with _open_url(url, opener) as response, destination.open("xb") as stream:
-            total = _copy_and_hash(response, stream, digest, limit, total)
+            _copy_and_hash(response, stream, digest, limit)
     except (HTTPError, URLError, OSError) as error:
         raise AppUpdateError(f"Не удалось загрузить обновление: {error}") from error
     return digest.hexdigest()
@@ -371,12 +431,12 @@ def _copy_and_hash(
     destination: BinaryIO,
     digest: Any,
     limit: int,
-    total: int,
-) -> int:
+) -> None:
+    total = 0
     while True:
         chunk = source.read(1024 * 1024)
         if not chunk:
-            return total
+            return
         total += len(chunk)
         if total > limit:
             raise AppUpdateError("Файл обновления превышает допустимый размер.")
@@ -414,10 +474,39 @@ def _error_path(target_path: Path) -> Path:
 
 def _powershell_executable() -> Path:
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    executable = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    executable = (
+        system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    )
     if not executable.is_file():
-        raise AppUpdateError("Не найден системный Windows PowerShell для установки обновления.")
+        raise AppUpdateError(
+            "Не найден системный Windows PowerShell для установки обновления."
+        )
     return executable
+
+
+def _clear_frozen_windows_dll_directory() -> str | None:
+    """Let a system helper resolve system DLLs instead of bundled ones."""
+    if sys.platform != "win32" or not bool(getattr(sys, "frozen", False)):
+        return None
+    application_home = getattr(sys, "_MEIPASS", None)
+    if not isinstance(application_home, str) or not application_home:
+        return None
+    _set_windows_dll_directory(None)
+    return application_home
+
+
+def _set_windows_dll_directory(directory: str | None) -> None:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_dll_directory = kernel32.SetDllDirectoryW
+    set_dll_directory.argtypes = [ctypes.c_wchar_p]
+    set_dll_directory.restype = ctypes.c_int
+    if not set_dll_directory(directory):
+        raise OSError(
+            ctypes.get_last_error(),
+            "Windows не смогла изменить каталог поиска DLL",
+        )
 
 
 def _write_installer_script() -> Path:
@@ -425,107 +514,12 @@ def _write_installer_script() -> Path:
     os.close(handle)
     path = Path(raw_path)
     try:
-        path.write_text(_INSTALLER_SCRIPT, encoding="utf-8-sig")
+        path.write_text(_read_installer_script(), encoding="utf-8-sig")
     except OSError:
         path.unlink(missing_ok=True)
         raise
     return path
 
 
-_INSTALLER_SCRIPT = r'''param(
-    [Parameter(Mandatory=$true)][int]$SingRouteProcessId,
-    [Parameter(Mandatory=$true)][string]$StagedPath,
-    [Parameter(Mandatory=$true)][string]$TargetPath,
-    [Parameter(Mandatory=$true)][string]$BackupPath,
-    [Parameter(Mandatory=$true)][string]$ErrorPath,
-    [Parameter(Mandatory=$true)][string]$ReadyPath,
-    [Parameter(Mandatory=$true)][string]$ScriptPath
-)
-$ErrorActionPreference = "Stop"
-[System.IO.File]::WriteAllText($ReadyPath, "ready")
-
-function Move-WithRetry {
-    param(
-        [Parameter(Mandatory=$true)][string]$Source,
-        [Parameter(Mandatory=$true)][string]$Destination,
-        [Parameter(Mandatory=$true)][DateTime]$Deadline
-    )
-    while ($true) {
-        try {
-            Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
-            return
-        }
-        catch {
-            if ([DateTime]::UtcNow -ge $Deadline) { throw }
-            Start-Sleep -Milliseconds 250
-        }
-    }
-}
-
-$backupCreated = $false
-try {
-    $deadline = [DateTime]::UtcNow.AddSeconds(120)
-    while (Get-Process -Id $SingRouteProcessId -ErrorAction SilentlyContinue) {
-        if ([DateTime]::UtcNow -ge $deadline) {
-            throw "SingRoute did not exit before the update deadline."
-        }
-        Start-Sleep -Milliseconds 250
-    }
-
-    if (Test-Path -LiteralPath $BackupPath) {
-        throw "A previous update backup already exists: $BackupPath"
-    }
-    Move-WithRetry -Source $TargetPath -Destination $BackupPath -Deadline $deadline
-    $backupCreated = $true
-
-    try {
-        Move-Item -LiteralPath $StagedPath -Destination $TargetPath -ErrorAction Stop
-    }
-    catch {
-        Move-Item -LiteralPath $BackupPath -Destination $TargetPath -ErrorAction Stop
-        $backupCreated = $false
-        throw
-    }
-
-    try {
-        Start-Process -FilePath $TargetPath -ErrorAction Stop
-    }
-    catch {
-        Move-Item -LiteralPath $TargetPath -Destination $StagedPath -ErrorAction Stop
-        Move-Item -LiteralPath $BackupPath -Destination $TargetPath -ErrorAction Stop
-        $backupCreated = $false
-        throw
-    }
-
-    Remove-Item -Force -LiteralPath $BackupPath -ErrorAction SilentlyContinue
-    Remove-Item -Force -LiteralPath $ErrorPath -ErrorAction SilentlyContinue
-    exit 0
-}
-catch {
-    $failure = $_.Exception.ToString()
-    try {
-        if ($backupCreated -and -not (Test-Path -LiteralPath $TargetPath)) {
-            Move-Item -LiteralPath $BackupPath -Destination $TargetPath -ErrorAction Stop
-            $backupCreated = $false
-        }
-        if (Test-Path -LiteralPath $TargetPath) {
-            Start-Process -FilePath $TargetPath -ErrorAction SilentlyContinue
-        }
-    }
-    finally {
-        try {
-            [System.IO.File]::WriteAllText(
-                $ErrorPath,
-                $failure,
-                [System.Text.UTF8Encoding]::new($false)
-            )
-        }
-        catch {}
-    }
-    exit 1
-}
-finally {
-    Remove-Item -Force -LiteralPath $ReadyPath -ErrorAction SilentlyContinue
-    Remove-Item -Force -LiteralPath $ScriptPath -ErrorAction SilentlyContinue
-}
-'''
+def _read_installer_script() -> str:
+    return Path(__file__).with_name("update.ps1").read_text(encoding="utf-8")

@@ -66,6 +66,14 @@ def test_xray_vless_reality_omits_absent_flow_and_fingerprint():
     assert "utls" not in result["tls"]
 
 
+def test_xray_vless_reality_rejects_string_allow_insecure():
+    outbound = _xray_vless_reality_outbound()
+    outbound["streamSettings"]["realitySettings"]["allowInsecure"] = "false"
+
+    with pytest.raises(ConfigPatchError, match=r"realitySettings\.allowInsecure"):
+        normalize_outbound_to_singbox(outbound)
+
+
 def test_xray_hysteria_version_2_converts_to_singbox_hysteria2():
     result = normalize_outbound_to_singbox(_xray_hysteria2_outbound())
 
@@ -82,6 +90,14 @@ def test_xray_hysteria_version_2_converts_to_singbox_hysteria2():
             "alpn": ["h3"],
         },
     }
+
+
+def test_xray_hysteria_rejects_non_boolean_allow_insecure():
+    outbound = _xray_hysteria2_outbound()
+    outbound["streamSettings"]["tlsSettings"]["allowInsecure"] = 0
+
+    with pytest.raises(ConfigPatchError, match=r"tlsSettings\.allowInsecure"):
+        normalize_outbound_to_singbox(outbound)
 
 
 def test_hysteria_version_1_raises_clear_error():
@@ -153,6 +169,21 @@ def test_application_patch_preserves_old_router_tag():
 
     assert updated_config["outbounds"][0]["type"] == "hysteria2"
     assert updated_config["outbounds"][0]["tag"] == "router-tag"
+
+
+def test_application_skips_malformed_candidate_and_converts_next_outbound():
+    malformed = _xray_vless_reality_outbound()
+    malformed["settings"] = {}
+
+    result = prepare_config_update(
+        json.dumps({"outbounds": [malformed, _xray_hysteria2_outbound()]}),
+        json.dumps({"outbounds": [{"type": "direct", "tag": "router-tag"}]}),
+    )
+
+    outbound = result.updated_config["outbounds"][0]
+    assert outbound["type"] == "hysteria2"
+    assert outbound["server"] == "mehceh2020store.ru"
+    assert outbound["tag"] == "router-tag"
 
 
 def _xray_vless_reality_outbound():

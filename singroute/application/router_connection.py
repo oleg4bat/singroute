@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
-import shlex
 
 from singroute.application.router_client import RouterClient
 
@@ -38,7 +38,9 @@ def inspect_router(
     notify("Проверяю наличие sing-box…")
     binary = client.run("command -v sing-box")
     if binary.exit_code != 0 or not binary.stdout.strip():
-        raise RouterCompatibilityError("На роутере не найден исполняемый файл sing-box.")
+        raise RouterCompatibilityError(
+            "На роутере не найден исполняемый файл sing-box."
+        )
 
     notify("Проверяю доступ к конфигу и службе…")
     config_check = client.run(f"test -r {shlex.quote(config_path)}")

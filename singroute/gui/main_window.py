@@ -2,27 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-import json
 from pathlib import Path
-import re
-import threading
 from typing import Any
 
 from PySide6.QtCore import (
     QPointF,
     QSignalBlocker,
+    Qt,
     QThreadPool,
     QTimer,
-    Qt,
     Signal,
     Slot,
 )
 from PySide6.QtGui import (
-    QColor,
     QCloseEvent,
+    QColor,
     QIcon,
     QKeySequence,
     QPainter,
@@ -61,17 +61,17 @@ from singroute.application.app_update import (
     launch_staged_update,
     stage_update,
 )
-from singroute.application.operation import MAX_CONFIG_BYTES
+from singroute.application.operation import MAX_CONFIG_BYTES, config_text_exceeds_limit
+from singroute.application.router_connection import (
+    RouterInfo,
+    inspect_router,
+)
 from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
     apply_router_update,
     prepare_router_update,
     read_router_outbound_summary,
-)
-from singroute.application.router_connection import (
-    RouterInfo,
-    inspect_router,
 )
 from singroute.gui.advanced_settings import AdvancedSettingsDialog
 from singroute.gui.worker import Worker
@@ -128,6 +128,7 @@ class MainWindow(QMainWindow):
         self._status_before_app_update = ""
         self._busy = False
         self._operation_cancellable = False
+        self._busy_close_message: str | None = None
 
         self.setWindowTitle("SingRoute")
         self.resize(self.settings.window_width, self.settings.window_height)
@@ -153,9 +154,7 @@ class MainWindow(QMainWindow):
         header_text = QVBoxLayout()
         title = QLabel("SingRoute")
         title.setObjectName("title")
-        subtitle = QLabel(
-            "Безопасная синхронизация outbound sing-box на OpenWrt"
-        )
+        subtitle = QLabel("Безопасная синхронизация outbound sing-box на OpenWrt")
         subtitle.setObjectName("subtitle")
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
@@ -263,9 +262,7 @@ class MainWindow(QMainWindow):
         new_layout.addWidget(QLabel("После обновления"))
         self.new_preview = QPlainTextEdit()
         self.new_preview.setReadOnly(True)
-        self.new_preview.setPlaceholderText(
-            "Загрузите исходный конфиг для сравнения"
-        )
+        self.new_preview.setPlaceholderText("Загрузите исходный конфиг для сравнения")
         new_layout.addWidget(self.new_preview)
         preview_layout.addLayout(old_layout, 1)
         preview_layout.addLayout(new_layout, 1)
@@ -341,7 +338,6 @@ class MainWindow(QMainWindow):
     def _connect_field_changes(self) -> None:
         self.host_edit.textChanged.connect(self._connection_fields_changed)
         self.username_edit.textChanged.connect(self._connection_fields_changed)
-        self.password_edit.textChanged.connect(self._invalidate_preview)
         self.remember_password_check.toggled.connect(self._remember_password_changed)
         self.auto_connect_check.toggled.connect(self._auto_connect_changed)
 
@@ -376,10 +372,7 @@ class MainWindow(QMainWindow):
             self._set_source_content(text, "Конфиг вставлен из буфера")
 
     def _set_source_content(self, content: str, label: str) -> None:
-        if (
-            len(content) > MAX_CONFIG_BYTES
-            or len(content.encode("utf-8")) > MAX_CONFIG_BYTES
-        ):
+        if config_text_exceeds_limit(content):
             QMessageBox.warning(
                 self,
                 "Исходный конфиг",
@@ -404,26 +397,16 @@ class MainWindow(QMainWindow):
         dialog = AdvancedSettingsDialog(self.settings, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        previous = (
-            self.settings.port,
-            self.settings.auth_mode,
-            self.settings.identity_file,
-            self.settings.config_path,
-            self.settings.service_name,
-        )
-        dialog.apply_to(self.settings)
-        current = (
-            self.settings.port,
-            self.settings.auth_mode,
-            self.settings.identity_file,
-            self.settings.config_path,
-            self.settings.service_name,
-        )
-        if current != previous:
+
+        candidate = self._settings_from_fields()
+        dialog.apply_to(candidate)
+        router_settings_changed = _router_settings_signature(
+            candidate
+        ) != _router_settings_signature(self.settings)
+        if not self._save_settings(candidate):
+            return
+        if router_settings_changed:
             self._disconnect_router("Настройки подключения изменены")
-        self.connection_hint.setText(self._advanced_summary())
-        self._invalidate_preview()
-        self._save_settings()
 
     def _check_startup_update_when_idle(self) -> None:
         self._check_app_update(silent=True)
@@ -456,6 +439,7 @@ class MainWindow(QMainWindow):
             "Проверяю обновления SingRoute…",
             retry=lambda: self._check_app_update(silent=False),
             cancellable=False,
+            close_block_message=("Дождитесь завершения проверки обновлений SingRoute."),
         )
 
     @Slot(object)
@@ -525,6 +509,7 @@ class MainWindow(QMainWindow):
             f"Загружаю SingRoute v{release.version}…",
             retry=lambda: self._download_app_update(release),
             cancellable=False,
+            close_block_message=("Дождитесь завершения загрузки обновления SingRoute."),
         )
 
     def _app_update_downloaded(self, result: object) -> None:
@@ -546,12 +531,13 @@ class MainWindow(QMainWindow):
         self._invalidate_preview()
 
     def _auto_connect_changed(self, checked: bool) -> None:
-        if not checked:
-            self.settings.auto_connect = False
-            self._save_settings()
-        elif self._connected_client is not None:
-            self.settings.auto_connect = True
-            self._save_settings()
+        if checked and self._connected_client is None:
+            return
+        candidate = self._settings_from_fields()
+        candidate.auto_connect = checked
+        if not self._save_settings(candidate):
+            with QSignalBlocker(self.auto_connect_check):
+                self.auto_connect_check.setChecked(self.settings.auto_connect)
 
     def _advanced_summary(self) -> str:
         auth_labels = {
@@ -564,11 +550,8 @@ class MainWindow(QMainWindow):
             f"{self.settings.config_path}"
         )
 
-    def _remember_password_changed(self, checked: bool) -> None:
+    def _remember_password_changed(self, _checked: bool) -> None:
         self._set_password_placeholder()
-        self._invalidate_preview()
-        if not checked:
-            self.password_edit.clear()
 
     def _set_password_placeholder(self) -> None:
         if self.remember_password_check.isChecked():
@@ -582,9 +565,7 @@ class MainWindow(QMainWindow):
             QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
         )
         label = "Скрыть пароль" if visible else "Показать пароль"
-        self.password_visibility_action.setIcon(
-            _password_visibility_icon(visible)
-        )
+        self.password_visibility_action.setIcon(_password_visibility_icon(visible))
         self.password_visibility_action.setText(label)
         self.password_visibility_action.setToolTip(label)
 
@@ -642,12 +623,18 @@ class MainWindow(QMainWindow):
         self.connection_state_label.style().unpolish(self.connection_state_label)
         self.connection_state_label.style().polish(self.connection_state_label)
         self.connect_button.setText("Отключиться")
-        self.settings.auto_connect = self.auto_connect_check.isChecked()
-        self._save_settings()
+        candidate = self._settings_from_fields()
+        candidate.auto_connect = self.auto_connect_check.isChecked()
+        settings_saved = self._save_settings(candidate)
+        if not settings_saved:
+            with QSignalBlocker(self.auto_connect_check):
+                self.auto_connect_check.setChecked(self.settings.auto_connect)
         message = (
             f"Подключение успешно: {result.info.openwrt_release}; "
             f"sing-box: {result.info.sing_box_path}"
         )
+        if not settings_saved:
+            message += "; настройки автоподключения не сохранены"
         self._append_log(message)
         self.status_label.setText(message)
         self._refresh_preview_for_state()
@@ -701,9 +688,7 @@ class MainWindow(QMainWindow):
         if not isinstance(result, dict):
             raise TypeError("Некорректный текущий outbound роутера")
         self.update_plan = None
-        self.old_preview.setPlainText(
-            json.dumps(result, ensure_ascii=False, indent=2)
-        )
+        self.old_preview.setPlainText(json.dumps(result, ensure_ascii=False, indent=2))
         self.new_preview.clear()
         self.apply_button.setEnabled(False)
         self.status_label.setText(
@@ -725,6 +710,7 @@ class MainWindow(QMainWindow):
         if not self._validate_fields(require_source=True):
             return
         imported_text = self.source_editor.toPlainText()
+
         def action() -> RouterUpdatePlan:
             self.operation_progress.emit("Читаю текущий конфиг роутера…")
             self._active_client = client
@@ -745,18 +731,15 @@ class MainWindow(QMainWindow):
     def _preview_finished(self, result: object) -> None:
         if not isinstance(result, RouterUpdatePlan):
             raise TypeError("Некорректный результат подготовки превью")
-        has_changes = (
-            result.preview["old_outbound"] != result.preview["new_outbound"]
-        )
-        self.update_plan = result if has_changes else None
+        self.update_plan = result if result.has_changes else None
         self.old_preview.setPlainText(
             json.dumps(result.preview["old_outbound"], ensure_ascii=False, indent=2)
         )
         self.new_preview.setPlainText(
             json.dumps(result.preview["new_outbound"], ensure_ascii=False, indent=2)
         )
-        self.apply_button.setEnabled(has_changes)
-        if has_changes:
+        self.apply_button.setEnabled(result.has_changes)
+        if result.has_changes:
             self.status_label.setText("Изменения подготовлены — проверьте превью")
             self._append_log("Превью подготовлено; конфиг роутера ещё не изменён.")
         else:
@@ -797,15 +780,19 @@ class MainWindow(QMainWindow):
             "Проверяю и обновляю конфиг роутера…",
             retry=self._apply_update,
             cancellable=False,
+            close_block_message=(
+                "Безопасное обновление уже началось. Дождитесь его завершения, "
+                "чтобы не оставить роутер с частично применённым конфигом."
+            ),
         )
 
     def _update_finished(self, result: object) -> None:
         if not isinstance(result, RouterUpdateResult):
             raise TypeError("Некорректный результат обновления")
         self._append_log(result.message)
-        if result.backup_deleted:
-            self._append_log("Временная резервная копия удалена с роутера.")
-        elif result.backup_path:
+        if result.details:
+            self._append_log(result.details)
+        if result.backup_path and not result.backup_deleted:
             self._append_log(f"Резервная копия оставлена: {result.backup_path}")
         self.status_label.setText(result.message)
         if result.success:
@@ -839,6 +826,7 @@ class MainWindow(QMainWindow):
         *,
         retry: Callable[[], None],
         cancellable: bool,
+        close_block_message: str | None = None,
     ) -> None:
         if self._busy:
             return
@@ -846,6 +834,7 @@ class MainWindow(QMainWindow):
         self._success_handler = on_success
         self._cancel_event = threading.Event()
         self._operation_cancellable = cancellable
+        self._busy_close_message = close_block_message
         self._set_busy(True, status)
         worker = Worker(action)
         self._active_worker = worker
@@ -883,11 +872,12 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Операция отменена")
             self._append_log("Операция отменена пользователем.")
             return
-        if isinstance(error, SshRouterError) and not isinstance(
-            error, (UnknownHostKeyError, HostKeyMismatchError)
+        if (
+            isinstance(error, SshRouterError)
+            and not isinstance(error, (UnknownHostKeyError, HostKeyMismatchError))
+            and failed_client is self._connected_client
         ):
-            if failed_client is self._connected_client:
-                self._disconnect_router("SSH-соединение потеряно")
+            self._disconnect_router("SSH-соединение потеряно")
         if isinstance(error, UnknownHostKeyError):
             retry = self._retry_action
             self._retry_action = None
@@ -900,10 +890,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.No,
             )
             if answer == QMessageBox.StandardButton.Yes:
-                self.settings.trusted_host_keys[
-                    f"{error.info.host}:{error.info.port}"
-                ] = error.info.trust_token
-                self._save_settings()
+                candidate = self._settings_from_fields()
+                candidate.trusted_host_keys[f"{error.info.host}:{error.info.port}"] = (
+                    error.info.trust_token
+                )
+                if not self._save_settings(candidate):
+                    return
                 self._append_log(
                     f"SSH fingerprint подтверждён: {error.info.fingerprint}"
                 )
@@ -925,6 +917,9 @@ class MainWindow(QMainWindow):
 
     def _show_error(self, error: object) -> None:
         message = str(error)
+        notes = getattr(error, "__notes__", None)
+        if notes:
+            message = "\n\n".join([message, *(str(note) for note in notes)])
         self.status_label.setText("Ошибка")
         self.show_log_check.setChecked(True)
         self._append_log(f"Ошибка: {message}")
@@ -954,6 +949,7 @@ class MainWindow(QMainWindow):
         if not busy:
             self._cancel_event = None
             self._operation_cancellable = False
+            self._busy_close_message = None
         if status is not None:
             self.status_label.setText(status)
 
@@ -962,9 +958,10 @@ class MainWindow(QMainWindow):
         password = self.password_edit.text()
         if not password and current.remember_password:
             try:
-                password = self.credential_store.get_password(
-                    self._credential_target(current)
-                ) or ""
+                password = (
+                    self.credential_store.get_password(self._credential_target(current))
+                    or ""
+                )
             except Exception as error:
                 raise SshRouterError(
                     f"Не удалось прочитать сохранённый пароль Windows: {error}"
@@ -993,10 +990,7 @@ class MainWindow(QMainWindow):
                 "Вставьте текст конфига или откройте JSON-файл.",
             )
             return False
-        if require_source and (
-            len(source_text) > MAX_CONFIG_BYTES
-            or len(source_text.encode("utf-8")) > MAX_CONFIG_BYTES
-        ):
+        if require_source and config_text_exceeds_limit(source_text):
             QMessageBox.warning(
                 self,
                 "Исходный конфиг",
@@ -1024,7 +1018,10 @@ class MainWindow(QMainWindow):
                 "Имя службы в дополнительных настройках содержит недопустимые символы.",
             )
             return False
-        if self.settings.identity_file and not Path(self.settings.identity_file).is_file():
+        if (
+            self.settings.identity_file
+            and not Path(self.settings.identity_file).is_file()
+        ):
             QMessageBox.warning(
                 self,
                 "SSH-ключ",
@@ -1033,54 +1030,126 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def _settings_from_fields(self) -> AppSettings:
+    def _settings_from_fields(
+        self,
+        base_settings: AppSettings | None = None,
+    ) -> AppSettings:
+        base = base_settings or self.settings
         return AppSettings(
             host=self.host_edit.text().strip(),
-            port=self.settings.port,
+            port=base.port,
             username=self.username_edit.text().strip(),
-            config_path=self.settings.config_path,
-            service_name=self.settings.service_name,
-            auth_mode=self.settings.auth_mode,
-            identity_file=self.settings.identity_file,
+            config_path=base.config_path,
+            service_name=base.service_name,
+            auth_mode=base.auth_mode,
+            identity_file=base.identity_file,
             remember_password=self.remember_password_check.isChecked(),
-            auto_connect=self.settings.auto_connect,
-            check_updates_on_startup=self.settings.check_updates_on_startup,
-            last_import_directory=self.settings.last_import_directory,
+            auto_connect=base.auto_connect,
+            check_updates_on_startup=base.check_updates_on_startup,
+            last_import_directory=base.last_import_directory,
             window_width=self.width(),
             window_height=self.height(),
-            trusted_host_keys=dict(self.settings.trusted_host_keys),
+            trusted_host_keys=dict(base.trusted_host_keys),
         )
 
-    def _save_settings(self) -> bool:
-        current = self._settings_from_fields()
+    def _save_settings(self, base_settings: AppSettings | None = None) -> bool:
+        current = self._settings_from_fields(base_settings)
         target = self._credential_target(current)
         previous_target = self._stored_credential_target
         entered_password = self.password_edit.text()
+
+        credential_changes: dict[CredentialTarget, str | None] = {}
+        if current.remember_password:
+            if entered_password:
+                credential_changes[target] = entered_password
+            elif previous_target != target:
+                self._report_settings_error(
+                    "Введите пароль, чтобы сохранить его для новых "
+                    "параметров подключения."
+                )
+                return False
+            if previous_target is not None and previous_target != target:
+                credential_changes[previous_target] = None
+        elif previous_target is not None:
+            credential_changes[previous_target] = None
+
+        try:
+            previous_credentials = {
+                changed_target: self.credential_store.get_password(changed_target)
+                for changed_target in credential_changes
+            }
+        except Exception as error:
+            self._report_settings_error(
+                f"Не удалось прочитать пароль Windows перед сохранением: {error}"
+            )
+            return False
+
+        try:
+            self._apply_credential_values(credential_changes)
+        except Exception as error:
+            rollback_error = self._restore_credential_values(previous_credentials)
+            self._report_settings_error(
+                _credential_error_message(
+                    f"Не удалось обновить пароль Windows: {error}",
+                    rollback_error,
+                )
+            )
+            return False
+
         try:
             self.settings_store.save(current)
         except Exception as error:
-            self._append_log(f"Настройки не сохранены: {error}")
+            rollback_error = self._restore_credential_values(previous_credentials)
+            self._report_settings_error(
+                _credential_error_message(
+                    f"Не удалось записать INI: {error}",
+                    rollback_error,
+                )
+            )
             return False
 
         self.settings = current
-        try:
-            if current.remember_password and entered_password:
-                self.credential_store.set_password(target, entered_password)
-                with QSignalBlocker(self.password_edit):
-                    self.password_edit.clear()
-            elif not current.remember_password:
-                self.credential_store.delete_password(target)
-
-            if previous_target is not None and previous_target != target:
-                self.credential_store.delete_password(previous_target)
-        except Exception as error:
-            self._append_log(f"Не удалось обновить пароль Windows: {error}")
-            return False
-
         self._stored_credential_target = target if current.remember_password else None
+        if current.remember_password and entered_password:
+            with QSignalBlocker(self.password_edit):
+                self.password_edit.clear()
         self.connection_hint.setText(self._advanced_summary())
         self._set_password_placeholder()
         return True
+
+    def _apply_credential_values(
+        self,
+        credentials: dict[CredentialTarget, str | None],
+    ) -> None:
+        for target, password in credentials.items():
+            self._set_credential_value(target, password)
+
+    def _set_credential_value(
+        self,
+        target: CredentialTarget,
+        password: str | None,
+    ) -> None:
+        if password is None:
+            self.credential_store.delete_password(target)
+        else:
+            self.credential_store.set_password(target, password)
+
+    def _restore_credential_values(
+        self,
+        credentials: dict[CredentialTarget, str | None],
+    ) -> str | None:
+        errors: list[str] = []
+        for target, password in reversed(credentials.items()):
+            try:
+                self._set_credential_value(target, password)
+            except Exception as error:
+                errors.append(str(error))
+        return "; ".join(errors) or None
+
+    def _report_settings_error(self, message: str) -> None:
+        self.status_label.setText("Настройки не сохранены")
+        self.show_log_check.setChecked(True)
+        self._append_log(f"Настройки не сохранены: {message}")
 
     @staticmethod
     def _credential_target(settings: AppSettings) -> CredentialTarget:
@@ -1101,8 +1170,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     "Обновление выполняется",
-                    "Безопасное обновление уже началось. Дождитесь его завершения, "
-                    "чтобы не оставить роутер с частично применённым конфигом.",
+                    self._busy_close_message
+                    or "Операция уже выполняется. Дождитесь её завершения.",
                 )
                 event.ignore()
                 return
@@ -1123,6 +1192,27 @@ class MainWindow(QMainWindow):
             self._connected_client = None
         self._save_settings()
         event.accept()
+
+
+def _router_settings_signature(
+    settings: AppSettings,
+) -> tuple[int, str, str, str, str]:
+    return (
+        settings.port,
+        settings.auth_mode,
+        settings.identity_file,
+        settings.config_path,
+        settings.service_name,
+    )
+
+
+def _credential_error_message(message: str, rollback_error: str | None) -> str:
+    if rollback_error is None:
+        return message
+    return (
+        f"{message}. Не удалось полностью восстановить прежние пароли Windows: "
+        f"{rollback_error}"
+    )
 
 
 def _ask_yes_no(
@@ -1174,6 +1264,8 @@ def _password_visibility_icon(password_visible: bool) -> QIcon:
 
 def _result_details(result: RouterUpdateResult) -> str:
     details = [result.message]
+    if result.details:
+        details.append(result.details)
     if result.backup_path and not result.backup_deleted:
         details.append(f"Резервная копия оставлена: {result.backup_path}")
     if result.validation_result.exit_code != 0:

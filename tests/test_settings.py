@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from keyring.errors import KeyringError, PasswordDeleteError
+
 import singroute.infrastructure.settings as settings_module
 from singroute.infrastructure.credentials import (
-    CredentialStore,
-    CredentialTarget,
     LEGACY_SERVICE_NAME,
     SERVICE_NAME,
+    CredentialStore,
+    CredentialTarget,
 )
 from singroute.infrastructure.settings import (
     AppSettings,
@@ -73,6 +76,15 @@ def test_invalid_ini_values_fall_back_to_safe_defaults(tmp_path: Path):
     assert settings.window_height == 720
 
 
+def test_malformed_ini_falls_back_to_safe_defaults(tmp_path: Path):
+    path = tmp_path / "SingRoute.ini"
+    path.write_text("[connection\nhost = broken", encoding="utf-8")
+
+    settings = PortableSettingsStore(path).load()
+
+    assert settings == AppSettings()
+
+
 def test_credential_store_uses_endpoint_specific_windows_vault_key():
     backend = FakeKeyring()
     store = CredentialStore(backend)
@@ -122,6 +134,17 @@ def test_credential_store_migrates_legacy_password_to_singroute_service():
     assert (LEGACY_SERVICE_NAME, target.key) not in backend.values
 
 
+def test_credential_store_ignores_only_missing_password_on_delete():
+    target = CredentialTarget("openwrt.lan", 22, "root")
+    missing_backend = FailingDeleteKeyring(PasswordDeleteError("missing"))
+
+    CredentialStore(missing_backend).delete_password(target)
+
+    failing_backend = FailingDeleteKeyring(KeyringError("vault unavailable"))
+    with pytest.raises(KeyringError, match="vault unavailable"):
+        CredentialStore(failing_backend).delete_password(target)
+
+
 class FakeKeyring:
     def __init__(self) -> None:
         self.values: dict[tuple[str, str], str] = {}
@@ -134,3 +157,12 @@ class FakeKeyring:
 
     def delete_password(self, service: str, username: str) -> None:
         self.values.pop((service, username), None)
+
+
+class FailingDeleteKeyring(FakeKeyring):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    def delete_password(self, service: str, username: str) -> None:
+        raise self.error

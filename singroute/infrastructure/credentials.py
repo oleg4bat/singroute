@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
+from keyring.errors import PasswordDeleteError
 
 SERVICE_NAME = "SingRoute"
 LEGACY_SERVICE_NAME = "singbox-outbound-updater"
@@ -59,8 +61,6 @@ class CredentialStore:
         self._delete_password(LEGACY_SERVICE_NAME, target)
 
     def _delete_password(self, service_name: str, target: CredentialTarget) -> None:
-        try:
+        # Deleting an already absent credential is idempotent.
+        with suppress(PasswordDeleteError):
             self._backend.delete_password(service_name, target.key)
-        except Exception as error:
-            if error.__class__.__name__ not in {"PasswordDeleteError", "KeyringError"}:
-                raise
