@@ -201,6 +201,25 @@ def test_lost_install_response_reconciles_updated_config_and_continues():
     assert ("read_text", CONFIG_PATH) in client.calls
 
 
+def test_ambiguous_install_preserves_recovery_state_when_ssh_returns_for_cleanup():
+    client = SafeFakeRouterClient(
+        files={CONFIG_PATH: _router_config_text()},
+        install_applies_then_loses_response=True,
+        reconcile_temporarily_unavailable=True,
+    )
+    plan = prepare_router_update(_imported_config_text(), client)
+
+    with pytest.raises(RouterUpdateError, match="однозначно определить"):
+        _apply(plan, client)
+
+    assert json.loads(client.files[CONFIG_PATH])["outbounds"][0]["server"] == "new.test"
+    assert client.files[PATHS.backup_path] == _router_config_text()
+    assert PATHS.temporary_path in client.files
+    assert not any(
+        call == ("run", f"rm -f {PATHS.backup_path}") for call in client.calls
+    )
+
+
 def test_restart_failure_restores_backup_atomically_and_restarts_old_config():
     restart_command = "/etc/init.d/sing-box restart"
     client = SafeFakeRouterClient(
@@ -315,6 +334,8 @@ class SafeFakeRouterClient:
     lock_acquire_exit: int | None = None
     lock_release_exit: int | None = None
     install_applies_then_loses_response: bool = False
+    reconcile_temporarily_unavailable: bool = False
+    transient_connection_failures: int = 0
     lock_held: bool = False
     service_lock_states: list[bool] = field(default_factory=list)
 
@@ -324,6 +345,9 @@ class SafeFakeRouterClient:
 
     def read_text(self, path: str) -> str:
         self.calls.append(("read_text", path))
+        if self.transient_connection_failures:
+            self.transient_connection_failures -= 1
+            raise OSError("temporary SSH failure")
         return self.files[path]
 
     def write_text(self, path: str, content: str) -> None:
@@ -335,6 +359,9 @@ class SafeFakeRouterClient:
 
     def run(self, command: str) -> CommandResult:
         self.calls.append(("run", command))
+        if command.startswith("test -f ") and self.transient_connection_failures:
+            self.transient_connection_failures -= 1
+            raise OSError("temporary SSH failure")
         if "/etc/init.d/sing-box" in command:
             self.service_lock_states.append(self.lock_held)
         queued = self.sequenced_results.get(command)
@@ -375,6 +402,8 @@ class SafeFakeRouterClient:
             self.files[CONFIG_PATH] = self.files.pop(PATHS.install_path)
             self.file_modes[CONFIG_PATH] = self.file_modes.pop(PATHS.install_path)
             if self.install_applies_then_loses_response:
+                if self.reconcile_temporarily_unavailable:
+                    self.transient_connection_failures = 2
                 return CommandResult(command, -1, stderr="connection lost")
             return CommandResult(command, 0)
         if command.startswith(f"cp -p {PATHS.backup_path} {PATHS.restore_path}"):

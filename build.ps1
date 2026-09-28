@@ -1,5 +1,11 @@
 $ErrorActionPreference = "Stop"
 
+# Local builds use the EXE alone. A legacy sidecar may describe an older build.
+$legacyChecksumPath = Join-Path $PSScriptRoot "dist\SingRoute.exe.sha256"
+if (Test-Path -LiteralPath $legacyChecksumPath -PathType Leaf) {
+    Remove-Item -LiteralPath $legacyChecksumPath -Force
+}
+
 poetry run pyinstaller `
     --noconfirm `
     --clean `

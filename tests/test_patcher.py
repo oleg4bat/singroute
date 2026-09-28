@@ -62,6 +62,24 @@ def test_router_outbounds_with_invalid_type_raises_clear_error():
         patch_router_config(router_config, new_outbound)
 
 
+@pytest.mark.parametrize(
+    "router_config",
+    [
+        {},
+        {"outbounds": []},
+        {"outbounds": ["not-an-object"]},
+        {"outbounds": [{"type": "direct"}]},
+        {"outbounds": [{"type": "direct", "tag": "   "}]},
+    ],
+)
+def test_patch_router_config_does_not_create_or_guess_active_outbound(router_config):
+    with pytest.raises(ConfigPatchError):
+        patch_router_config(
+            router_config,
+            {"type": "vless", "server": "example.com"},
+        )
+
+
 def test_empty_exported_outbounds_raises_clear_error():
     with pytest.raises(ConfigPatchError, match="не должен быть пустым"):
         select_exported_outbound({"outbounds": []})

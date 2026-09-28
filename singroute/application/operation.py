@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from singroute.core.errors import ConfigParseError
+from singroute.core.errors import ConfigParseError, ConfigPatchError
 from singroute.core.patcher import (
     patch_router_config,
     select_exported_outbound,
@@ -57,6 +57,12 @@ def prepare_config_update(
         },
         has_changes=old_outbound != updated_outbound,
     )
+
+
+def validate_imported_config(config_text: str) -> None:
+    """Check that source text contains a selectable supported proxy outbound."""
+    imported_config = _loads_config(config_text, "imported_config")
+    select_exported_outbound(imported_config)
 
 
 def config_text_exceeds_limit(config_text: str) -> bool:
@@ -111,14 +117,26 @@ def _validate_json_nesting(config_text: str, config_name: str) -> None:
 
 def _get_first_router_outbound(router_config: Any) -> dict[str, Any]:
     if not isinstance(router_config, dict):
-        return {}
+        raise ConfigPatchError("router_config должен быть объектом JSON (dict)")
 
     outbounds = router_config.get("outbounds")
-    if not isinstance(outbounds, list) or not outbounds:
-        return {}
+    if not isinstance(outbounds, list):
+        raise ConfigPatchError(
+            'router_config["outbounds"] должен быть массивом JSON (list)'
+        )
+    if not outbounds:
+        raise ConfigPatchError('router_config["outbounds"] не должен быть пустым')
 
     first_outbound = outbounds[0]
     if not isinstance(first_outbound, dict):
-        return {}
+        raise ConfigPatchError(
+            'router_config["outbounds"][0] должен быть объектом JSON (dict)'
+        )
+
+    tag = first_outbound.get("tag")
+    if not isinstance(tag, str) or not tag.strip():
+        raise ConfigPatchError(
+            'router_config["outbounds"][0]["tag"] должен быть непустой строкой'
+        )
 
     return first_outbound

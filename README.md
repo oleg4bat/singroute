@@ -13,6 +13,9 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 
 1. Connects to OpenWrt over SSH and keeps the session for subsequent actions.
 2. Imports JSON from the clipboard or a HAPP/NekoBox configuration file.
+   Ctrl+V accepts config text or one copied file and rejects unsupported formats
+   before loading. Normal text paste still works in connection fields. One local
+   file can also be dropped anywhere in the main window.
 3. Converts a supported proxy outbound to the sing-box format.
 4. Shows the current and proposed outbound while masking passwords, UUIDs, and
    private keys.
@@ -33,6 +36,13 @@ Download and run the single file:
 ```text
 SingRoute.exe
 ```
+
+Opening the same copy again brings its existing window to the foreground,
+restoring it if minimized.
+
+Version 0.5.0 adds file drag and drop, imports a copied config file with Ctrl+V,
+and identifies unsupported VLESS transports in the import message. It also
+requires a valid active router outbound before replacement.
 
 Python and an installer are not required. After settings are saved, SingRoute
 creates this file next to the executable:
@@ -60,7 +70,7 @@ replaces the executable with rollback protection, and starts SingRoute again.
 Version 0.3.3 adds this complete automatic replacement and restart flow.
 Version 0.3.5 fixes helper startup from the frozen application and requires a
 readiness signal before SingRoute closes, preventing silent failed updates.
-Version 0.3.6 keeps the previous executable until the updated GUI reports
+Version 0.4.0 keeps the previous executable until the updated GUI reports
 readiness and remains stable. A failed update is stopped, rolled back, and the
 restored version is checked after restart. It also starts both executables in an
 independent PyInstaller environment so they cannot reuse the old process's
@@ -72,11 +82,11 @@ Version 0.4.0 improves updater diagnostics, reports retained rollback files that
 would block the next automatic update, and distinguishes application-update
 operations from router configuration changes in the interface.
 
-**The first upgrade from SingRoute 0.3.5 or older to 0.3.6 must be manual:** close
+**The first upgrade from SingRoute 0.3.5 or older to 0.4.0 must be manual:** close
 all SingRoute processes, download the official `SingRoute.exe`, and replace the
 old file under that exact name. Do not leave the new version beside it under a
 different name. Installation logic always comes from the version that is already
-running, so only later updates started from 0.3.6 receive the new health check
+running, so only later updates started from 0.4.0 receive the new health check
 and rollback protection.
 
 Default connection settings:
@@ -166,8 +176,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.4.0 -m "Release v0.4.0"
-git push origin v0.4.0
+git tag -a v0.5.0 -m "Release v0.5.0"
+git push origin v0.5.0
 ```
 
 The `Release` workflow validates metadata and formatting, audits Python

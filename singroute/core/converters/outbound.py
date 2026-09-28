@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from singroute.core.errors import ConfigPatchError
+from singroute.core.errors import ConfigPatchError, UnsupportedVlessTransportError
 
 
 def normalize_outbound_to_singbox(outbound: dict[str, Any]) -> dict[str, Any]:
@@ -40,7 +40,7 @@ def _convert_vless_reality_tcp(outbound: dict[str, Any]) -> dict[str, Any]:
 
     network = _require_value(stream_settings, "network", "streamSettings")
     if network != "tcp":
-        raise ConfigPatchError("VLESS conversion supports only Reality over TCP")
+        raise UnsupportedVlessTransportError(network)
 
     security = _require_value(stream_settings, "security", "streamSettings")
     if security != "reality":

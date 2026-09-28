@@ -122,6 +122,7 @@ def apply_router_update(
     lock_acquired = False
     operation_directory_created = False
     backup_available = False
+    install_attempted = False
     validation_result = CommandResult("sing-box check", -1)
     try:
         _acquire_update_lock(router_client, paths, operation_id)
@@ -155,6 +156,7 @@ def apply_router_update(
                 ),
             )
 
+        install_attempted = True
         install_result = _run_or_failure(
             router_client,
             _build_guarded_install_command(plan, paths),
@@ -213,7 +215,11 @@ def apply_router_update(
             validation_result=validation_result,
         )
     except Exception as error:
-        if operation_directory_created and not backup_available:
+        if (
+            operation_directory_created
+            and not backup_available
+            and not install_attempted
+        ):
             _cleanup_operation_directory(router_client, paths)
         if backup_available and not isinstance(error, RouterUpdateError):
             raise RouterUpdateError(

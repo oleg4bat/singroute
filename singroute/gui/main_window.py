@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
+    QEvent,
+    QMimeData,
+    QObject,
     QPointF,
     QSignalBlocker,
     Qt,
@@ -23,7 +26,12 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
     QIcon,
+    QKeyEvent,
     QKeySequence,
     QPainter,
     QPainterPath,
@@ -61,7 +69,11 @@ from singroute.application.app_update import (
     launch_staged_update,
     stage_update,
 )
-from singroute.application.operation import MAX_CONFIG_BYTES, config_text_exceeds_limit
+from singroute.application.operation import (
+    MAX_CONFIG_BYTES,
+    config_text_exceeds_limit,
+    validate_imported_config,
+)
 from singroute.application.router_connection import (
     RouterInfo,
     inspect_router,
@@ -72,6 +84,11 @@ from singroute.application.router_update import (
     apply_router_update,
     prepare_router_update,
     read_router_outbound_summary,
+)
+from singroute.core.errors import (
+    ConfigParseError,
+    ConfigPatchError,
+    UnsupportedVlessTransportError,
 )
 from singroute.gui.advanced_settings import AdvancedSettingsDialog
 from singroute.gui.worker import Worker
@@ -96,6 +113,20 @@ from singroute.infrastructure.ssh_router import (
 class ConnectedRouter:
     client: SshRouterClient
     info: RouterInfo
+
+
+@dataclass(frozen=True)
+class _ConnectionSnapshot:
+    host: str
+    username: str
+    port: int
+    config_path: str
+    service_name: str
+    identity_file: str | None
+    entered_password: str
+    remember_password: bool
+    auth_mode: str
+    trusted_host_key: str | None
 
 
 class MainWindow(QMainWindow):
@@ -131,10 +162,14 @@ class MainWindow(QMainWindow):
         self._busy_close_message: str | None = None
 
         self.setWindowTitle("SingRoute")
+        self.setAcceptDrops(True)
         self.resize(self.settings.window_width, self.settings.window_height)
         self.setMinimumSize(780, 620)
         self._build_ui()
         self._build_shortcuts()
+        self.installEventFilter(self)
+        for widget in self.findChildren(QWidget):
+            widget.installEventFilter(self)
         self._load_fields()
         self._connect_field_changes()
         self._set_password_placeholder()
@@ -146,6 +181,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         central = QWidget(self)
+        central.setAcceptDrops(True)
         root = QVBoxLayout(central)
         root.setContentsMargins(18, 14, 18, 14)
         root.setSpacing(10)
@@ -181,7 +217,7 @@ class MainWindow(QMainWindow):
         self.source_editor = QPlainTextEdit()
         self.source_editor.setReadOnly(True)
         self.source_editor.setPlaceholderText(
-            "Используйте «Вставить из буфера» или «Открыть файл»"
+            "Вставьте конфиг, откройте или перетащите файл"
         )
         self.source_editor.setMinimumHeight(90)
         self.source_editor.setMaximumHeight(145)
@@ -296,6 +332,16 @@ class MainWindow(QMainWindow):
         root.addWidget(self.log_edit)
 
         self.setCentralWidget(central)
+        self.drop_hint = QLabel("Отпустите файл, чтобы загрузить конфиг", central)
+        self.drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.drop_hint.setStyleSheet(
+            "background-color: rgba(15, 23, 42, 190); color: white; "
+            "border: 2px dashed #93c5fd; border-radius: 8px; "
+            "font-size: 20px; font-weight: 600;"
+        )
+        self.drop_hint.setGeometry(central.rect())
+        self.drop_hint.hide()
         self.setStyleSheet(
             """
             QLabel#title { font-size: 22px; font-weight: 650; }
@@ -321,10 +367,74 @@ class MainWindow(QMainWindow):
             self,
         )
         self.paste_shortcut.activated.connect(self._paste_shortcut_activated)
+        for field in (self.host_edit, self.username_edit, self.password_edit):
+            field.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.centralWidget() and event.type() == QEvent.Type.Resize:
+            self.drop_hint.setGeometry(self.centralWidget().rect())
+        if isinstance(watched, QWidget) and watched.window() is self:
+            if event.type() in (
+                QEvent.Type.DragEnter,
+                QEvent.Type.DragMove,
+            ) and isinstance(event, (QDragEnterEvent, QDragMoveEvent)):
+                if self._dropped_source_path(event.mimeData()) is not None and (
+                    event.possibleActions() & Qt.DropAction.CopyAction
+                ):
+                    self.drop_hint.raise_()
+                    self.drop_hint.show()
+                    event.setDropAction(Qt.DropAction.CopyAction)
+                    event.accept()
+                else:
+                    self.drop_hint.hide()
+                    event.ignore()
+                return True
+            if event.type() == QEvent.Type.DragLeave and isinstance(
+                event, QDragLeaveEvent
+            ):
+                self.drop_hint.hide()
+                return False
+            if event.type() == QEvent.Type.Drop and isinstance(event, QDropEvent):
+                self.drop_hint.hide()
+                path = self._dropped_source_path(event.mimeData())
+                if path is None or not (
+                    event.possibleActions() & Qt.DropAction.CopyAction
+                ):
+                    event.ignore()
+                else:
+                    event.setDropAction(Qt.DropAction.CopyAction)
+                    event.accept()
+                    self._load_source_path(path, f"Загружен файл: {path.name}")
+                return True
+        if (
+            watched in (self.host_edit, self.username_edit, self.password_edit)
+            and isinstance(event, QKeyEvent)
+            and event.type() == QEvent.Type.KeyPress
+            and event.matches(QKeySequence.StandardKey.Paste)
+        ):
+            mime_data = QApplication.clipboard().mimeData()
+            if mime_data.hasUrls() or not mime_data.hasText():
+                self._paste_source()
+                return True
+        return super().eventFilter(watched, event)
+
+    def _dropped_source_path(self, mime_data: QMimeData) -> Path | None:
+        if self._busy or not mime_data.hasUrls():
+            return None
+        urls = mime_data.urls()
+        if len(urls) != 1 or not urls[0].isLocalFile():
+            return None
+        path = Path(urls[0].toLocalFile())
+        return path if path.is_file() else None
 
     def _paste_shortcut_activated(self) -> None:
         focused_widget = QApplication.focusWidget()
-        if isinstance(focused_widget, QLineEdit):
+        mime_data = QApplication.clipboard().mimeData()
+        if (
+            isinstance(focused_widget, QLineEdit)
+            and mime_data.hasText()
+            and not mime_data.hasUrls()
+        ):
             focused_widget.paste()
             return
         self._paste_source()
@@ -351,25 +461,114 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        self._load_source_path(
+            Path(path),
+            f"Загружен файл: {Path(path).name}",
+        )
+
+    def _load_source_path(self, path: Path, label: str) -> None:
+        if not path.is_file():
+            self._unsupported_source_format()
+            return
         try:
-            if Path(path).stat().st_size > MAX_CONFIG_BYTES:
+            if path.stat().st_size > MAX_CONFIG_BYTES:
                 raise ValueError(
                     "Файл превышает безопасный лимит "
                     f"{MAX_CONFIG_BYTES // (1024 * 1024)} МиБ."
                 )
-            content = Path(path).read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeError, ValueError) as error:
+            content = path.read_text(encoding="utf-8-sig")
+        except UnicodeError:
+            self._unsupported_source_format()
+            return
+        except (OSError, ValueError) as error:
             QMessageBox.critical(self, "Ошибка файла", str(error))
             return
-        self.settings.last_import_directory = str(Path(path).parent)
-        self._set_source_content(content, f"Загружен файл: {Path(path).name}")
+        if self._import_source_text(content, label, from_file=True):
+            self.settings.last_import_directory = str(path.parent)
 
     def _paste_source(self) -> None:
         if self._busy:
             return
-        text = QApplication.clipboard().text()
-        if text.strip():
-            self._set_source_content(text, "Конфиг вставлен из буфера")
+        mime_data = QApplication.clipboard().mimeData()
+        if mime_data.hasUrls():
+            urls = mime_data.urls()
+            if len(urls) != 1 or not urls[0].isLocalFile():
+                self._unsupported_source_format()
+                return
+            path = Path(urls[0].toLocalFile())
+            self._load_source_path(
+                path,
+                f"Загружен файл из буфера: {path.name}",
+            )
+            return
+
+        if not mime_data.hasText():
+            self._unsupported_source_format()
+            return
+        text = mime_data.text().lstrip("\ufeff")
+        if not text.strip():
+            self._unsupported_source_format()
+            return
+        self._import_source_text(text, "Конфиг вставлен из буфера", from_file=False)
+
+    def _import_source_text(self, text: str, label: str, *, from_file: bool) -> bool:
+        try:
+            validate_imported_config(text)
+        except ConfigPatchError as error:
+            self._show_source_validation_error(error, from_file=from_file)
+            return False
+        self._set_source_content(text, label)
+        return True
+
+    def _unsupported_source_format(self) -> None:
+        QMessageBox.warning(
+            self,
+            "Исходный конфиг",
+            "Данный формат не поддерживается. Вставьте текст JSON или "
+            "скопируйте один файл с конфигурацией JSON.",
+        )
+
+    def _show_source_validation_error(
+        self, error: ConfigPatchError, *, from_file: bool
+    ) -> None:
+        if isinstance(error, ConfigParseError):
+            if "safe limit" in str(error):
+                message = (
+                    "Конфиг превышает безопасный лимит "
+                    f"{MAX_CONFIG_BYTES // (1024 * 1024)} МиБ."
+                )
+            elif isinstance(error.__cause__, json.JSONDecodeError):
+                cause = error.__cause__
+                message = (
+                    "Данный формат не поддерживается: в файле некорректный JSON."
+                    if from_file
+                    else "В буфере некорректный JSON."
+                )
+                message += f" Строка {cause.lineno}, столбец {cause.colno}."
+            else:
+                message = "JSON слишком глубоко вложен."
+        elif isinstance(error, UnsupportedVlessTransportError):
+            transport_name = {
+                "grpc": "gRPC",
+                "ws": "WebSocket",
+                "http": "HTTP",
+                "httpupgrade": "HTTP Upgrade",
+                "quic": "QUIC",
+                "xhttp": "XHTTP",
+            }.get(error.network)
+            if transport_name is None:
+                message = "SingRoute пока не импортирует VLESS с этим транспортом."
+            else:
+                message = (
+                    "SingRoute пока не импортирует VLESS с транспортом "
+                    f"{transport_name}."
+                )
+        else:
+            message = (
+                "Данный формат не поддерживается: конфиг не содержит "
+                "поддерживаемый proxy outbound."
+            )
+        QMessageBox.warning(self, "Исходный конфиг", message)
 
     def _set_source_content(self, content: str, label: str) -> None:
         if config_text_exceeds_limit(content):
@@ -590,15 +789,16 @@ class MainWindow(QMainWindow):
             return
         if not self._save_settings():
             return
+        snapshot = self._connection_snapshot()
 
         def action() -> ConnectedRouter:
-            client = self._new_client()
+            client = self._new_client(snapshot)
             try:
                 client.connect()
                 info = inspect_router(
                     client,
-                    self.settings.config_path,
-                    self.settings.service_name,
+                    snapshot.config_path,
+                    snapshot.service_name,
                     self.operation_progress.emit,
                 )
                 return ConnectedRouter(client, info)
@@ -935,6 +1135,8 @@ class MainWindow(QMainWindow):
 
     def _set_busy(self, busy: bool, status: str | None = None) -> None:
         self._busy = busy
+        if busy:
+            self.drop_hint.hide()
         self.source_group.setEnabled(not busy)
         self.connection_group.setEnabled(not busy)
         self.advanced_button.setEnabled(not busy)
@@ -953,13 +1155,33 @@ class MainWindow(QMainWindow):
         if status is not None:
             self.status_label.setText(status)
 
-    def _new_client(self) -> SshRouterClient:
+    def _connection_snapshot(self) -> _ConnectionSnapshot:
         current = self._settings_from_fields()
-        password = self.password_edit.text()
-        if not password and current.remember_password:
+        return _ConnectionSnapshot(
+            host=current.host,
+            username=current.username,
+            port=current.port,
+            config_path=current.config_path,
+            service_name=current.service_name,
+            identity_file=current.identity_file or None,
+            entered_password=self.password_edit.text(),
+            remember_password=current.remember_password,
+            auth_mode=current.auth_mode,
+            trusted_host_key=current.trusted_host_keys.get(current.host_key_id()),
+        )
+
+    def _new_client(self, snapshot: _ConnectionSnapshot) -> SshRouterClient:
+        password = snapshot.entered_password
+        if not password and snapshot.remember_password:
             try:
                 password = (
-                    self.credential_store.get_password(self._credential_target(current))
+                    self.credential_store.get_password(
+                        CredentialTarget(
+                            snapshot.host,
+                            snapshot.port,
+                            snapshot.username,
+                        )
+                    )
                     or ""
                 )
             except Exception as error:
@@ -967,14 +1189,14 @@ class MainWindow(QMainWindow):
                     f"Не удалось прочитать сохранённый пароль Windows: {error}"
                 ) from error
         client = SshRouterClient(
-            host=current.host,
-            user=current.username,
-            port=current.port,
-            identity_file=current.identity_file or None,
+            host=snapshot.host,
+            user=snapshot.username,
+            port=snapshot.port,
+            identity_file=snapshot.identity_file,
             password=password or None,
             key_passphrase=password or None,
-            auth_mode=current.auth_mode,
-            trusted_host_key=current.trusted_host_keys.get(current.host_key_id()),
+            auth_mode=snapshot.auth_mode,
+            trusted_host_key=snapshot.trusted_host_key,
             cancel_event=self._cancel_event,
             progress_callback=self.operation_progress.emit,
         )

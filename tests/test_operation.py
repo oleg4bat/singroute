@@ -41,6 +41,7 @@ def test_summarize_masks_case_and_extended_secret_names_recursively():
             {
                 "outbounds": [
                     {
+                        "tag": "proxy",
                         "Token": "one",
                         "client-secret": "two",
                         "nested": {
@@ -54,6 +55,7 @@ def test_summarize_masks_case_and_extended_secret_names_recursively():
     )
 
     assert summary == {
+        "tag": "proxy",
         "Token": "***",
         "client-secret": "***",
         "nested": {
@@ -246,6 +248,27 @@ def test_prepare_config_update_rejects_non_list_router_outbounds():
         )
 
 
+@pytest.mark.parametrize(
+    "router_config",
+    [
+        {},
+        {"outbounds": []},
+        {"outbounds": ["not-an-object"]},
+        {"outbounds": [{"type": "direct"}]},
+        {"outbounds": [{"type": "direct", "tag": ""}]},
+        {"outbounds": [{"type": "direct", "tag": 123}]},
+    ],
+)
+def test_prepare_config_update_rejects_router_without_valid_active_outbound(
+    router_config,
+):
+    with pytest.raises(ConfigPatchError):
+        prepare_config_update(
+            json.dumps({"outbounds": [{"type": "vless", "server": "vpn.test"}]}),
+            json.dumps(router_config),
+        )
+
+
 def test_summaries_mask_sensitive_values():
     result = prepare_config_update(
         json.dumps(
@@ -265,6 +288,7 @@ def test_summaries_mask_sensitive_values():
                 "outbounds": [
                     {
                         "type": "trojan",
+                        "tag": "proxy",
                         "password": "old-password",
                         "tls": {"private_key": "old-private-key"},
                     }

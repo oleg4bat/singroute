@@ -85,19 +85,23 @@ def patch_router_config(
     replacement_outbound = deepcopy(new_outbound)
 
     outbounds = patched_config.get("outbounds")
-    if outbounds is None:
-        outbounds = []
-        patched_config["outbounds"] = outbounds
-    elif not isinstance(outbounds, list):
+    if not isinstance(outbounds, list):
         raise ConfigPatchError('router_config["outbounds"] must be a JSON array (list)')
+    if not outbounds:
+        raise ConfigPatchError('router_config["outbounds"] must not be empty')
 
-    if outbounds:
-        old_first_outbound = outbounds[0]
-        if isinstance(old_first_outbound, dict) and "tag" in old_first_outbound:
-            replacement_outbound["tag"] = old_first_outbound["tag"]
+    old_first_outbound = outbounds[0]
+    if not isinstance(old_first_outbound, dict):
+        raise ConfigPatchError(
+            'router_config["outbounds"][0] must be a JSON object (dict)'
+        )
+    old_tag = old_first_outbound.get("tag")
+    if not isinstance(old_tag, str) or not old_tag.strip():
+        raise ConfigPatchError(
+            'router_config["outbounds"][0]["tag"] must be a non-empty string'
+        )
 
-        outbounds[0] = replacement_outbound
-    else:
-        outbounds.append(replacement_outbound)
+    replacement_outbound["tag"] = old_tag
+    outbounds[0] = replacement_outbound
 
     return patched_config

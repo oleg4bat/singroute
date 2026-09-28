@@ -8,8 +8,14 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEventLoop, Qt, QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QEventLoop, QMimeData, QPoint, QPointF, Qt, QTimer, QUrl
+from PySide6.QtGui import (
+    QCloseEvent,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+)
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 
@@ -31,6 +37,17 @@ from singroute.gui.main_window import ConnectedRouter, MainWindow, _ask_yes_no
 from singroute.infrastructure.credentials import CredentialTarget
 from singroute.infrastructure.settings import AppSettings, PortableSettingsStore
 from singroute.infrastructure.ssh_router import SshRouterClient
+
+
+@pytest.fixture(autouse=True)
+def disable_scheduled_update_check(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        MainWindow, "_check_startup_update_when_idle", lambda _self: None
+    )
+    yield
+    app = QApplication.instance()
+    if app is not None:
+        app.clipboard().clear()
 
 
 def test_worker_result_is_delivered_back_to_gui_thread(tmp_path: Path):
@@ -63,6 +80,76 @@ def test_worker_result_is_delivered_back_to_gui_thread(tmp_path: Path):
     assert window._busy is False
     assert window._active_worker is None
     timeout.stop()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_connection_worker_uses_gui_thread_snapshot_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    window.host_edit.setText("router-before-worker")
+    window.username_edit.setText("admin")
+    window.password_edit.setText("one-time-secret")
+    actions = []
+    client_arguments: list[dict[str, object]] = []
+    inspect_arguments: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            client_arguments.append(kwargs)
+
+        def connect(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def capture_worker(action, *_args, **_kwargs) -> None:
+        actions.append(action)
+
+    def fake_inspect(_client, config_path, service_name, _progress):
+        inspect_arguments.append((config_path, service_name))
+        return RouterInfo("OpenWrt test", "/usr/bin/sing-box")
+
+    monkeypatch.setattr(main_window_module, "SshRouterClient", FakeClient)
+    monkeypatch.setattr(main_window_module, "inspect_router", fake_inspect)
+    monkeypatch.setattr(window, "_run_worker", capture_worker)
+
+    window._connect_router()
+
+    assert len(actions) == 1
+    window.host_edit.setText("router-after-worker-start")
+    window.username_edit.setText("changed")
+    window.password_edit.setText("changed-secret")
+
+    def fail_if_worker_reads_fields(*_args, **_kwargs):
+        raise AssertionError("worker accessed Qt connection fields")
+
+    monkeypatch.setattr(window, "_settings_from_fields", fail_if_worker_reads_fields)
+    result = actions[0]()
+
+    assert isinstance(result, ConnectedRouter)
+    assert client_arguments == [
+        {
+            "host": "router-before-worker",
+            "user": "admin",
+            "port": 22,
+            "identity_file": None,
+            "password": "one-time-secret",
+            "key_passphrase": "one-time-secret",
+            "auth_mode": "auto",
+            "trusted_host_key": None,
+            "cancel_event": window._cancel_event,
+            "progress_callback": window.operation_progress.emit,
+        }
+    ]
+    assert inspect_arguments == [("/etc/sing-box/config.json", "sing-box")]
     window.deleteLater()
     app.processEvents()
 
@@ -146,15 +233,27 @@ def test_gui_entry_point_configures_and_shows_main_window(
         def unlock(self) -> None:
             calls.append(("lock", "released"))
 
+    class FakeServer:
+        def close(self) -> None:
+            calls.append(("server", "closed"))
+
     monkeypatch.setattr(gui_app_module, "QApplication", FakeApplication)
     monkeypatch.setattr(gui_app_module, "MainWindow", FakeWindow)
-    monkeypatch.setattr(gui_app_module, "_acquire_instance_lock", FakeLock)
+    monkeypatch.setattr(
+        gui_app_module, "_acquire_instance_lock", lambda _dir: FakeLock()
+    )
+    monkeypatch.setattr(
+        gui_app_module,
+        "_start_activation_server",
+        lambda _window, _dir: FakeServer(),
+    )
 
     assert gui_app_module.run_gui() == 7
     assert ("name", "SingRoute") in calls
     assert ("organization", "SingRoute") in calls
     assert ("style", "Fusion") in calls
     assert ("window", "shown") in calls
+    assert ("server", "closed") in calls
     assert ("lock", "released") in calls
 
 
@@ -580,6 +679,498 @@ def test_ctrl_v_loads_config_but_keeps_normal_line_edit_paste(tmp_path: Path):
     assert window.host_edit.text() == "10.0.0.1"
     assert window.source_editor.toPlainText() == config_text
     window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_paste_rejects_incomplete_json_with_location(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    QApplication.clipboard().setText('{"outbounds": [{"type": "vless"},')
+
+    window._paste_source()
+
+    assert window.source_editor.toPlainText() == ""
+    assert len(warnings) == 1
+    assert "некорректный JSON" in warnings[0]
+    assert "Строка 1" in warnings[0]
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_ctrl_v_imports_copied_file_even_when_connection_field_has_focus(
+    tmp_path: Path,
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    window.show()
+    config_path = tmp_path / "source.json"
+    config_text = '{"outbounds": [{"type": "vless"}]}'
+    config_path.write_text(config_text, encoding="utf-8")
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(config_path))])
+    QApplication.clipboard().setMimeData(mime_data)
+    window.host_edit.setText("router.test")
+    window.host_edit.setFocus()
+    app.processEvents()
+
+    QTest.keyClick(window.host_edit, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+    app.processEvents()
+
+    assert window.host_edit.text() == "router.test"
+    assert window.source_editor.toPlainText() == config_text
+    assert window.source_name_label.text() == "Загружен файл из буфера: source.json"
+    assert window.settings.last_import_directory == str(tmp_path)
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_ctrl_v_reports_unsupported_clipboard_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    window.show()
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    mime_data = QMimeData()
+    mime_data.setData("application/octet-stream", b"not a config")
+    QApplication.clipboard().setMimeData(mime_data)
+    window.source_editor.setFocus()
+    app.processEvents()
+
+    QTest.keyClick(
+        window.source_editor, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier
+    )
+    app.processEvents()
+
+    assert window.source_editor.toPlainText() == ""
+    assert warnings == [
+        "Данный формат не поддерживается. Вставьте текст JSON или "
+        "скопируйте один файл с конфигурацией JSON."
+    ]
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_copied_file_must_contain_supported_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    config_path = tmp_path / "unrelated.json"
+    config_path.write_text('{"unrelated": true}', encoding="utf-8")
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(config_path))])
+    QApplication.clipboard().setMimeData(mime_data)
+
+    window._paste_source()
+
+    assert window.source_editor.toPlainText() == ""
+    assert window.settings.last_import_directory == ""
+    assert warnings and "Данный формат не поддерживается" in warnings[0]
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_open_file_uses_same_source_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    invalid_path = tmp_path / "unrelated.json"
+    invalid_path.write_text('{"unrelated": true}', encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *_args: (str(invalid_path), "JSON (*.json)"),
+    )
+
+    window._load_source_file()
+
+    assert window.source_editor.toPlainText() == ""
+    assert window.settings.last_import_directory == ""
+    assert warnings and "Данный формат не поддерживается" in warnings[0]
+    window.deleteLater()
+    app.processEvents()
+
+
+@pytest.mark.parametrize(
+    ("network", "expected_message"),
+    [
+        (
+            "grpc",
+            "SingRoute пока не импортирует VLESS с транспортом gRPC.",
+        ),
+        (
+            "ws",
+            "SingRoute пока не импортирует VLESS с транспортом WebSocket.",
+        ),
+        (
+            "private-network-value",
+            "SingRoute пока не импортирует VLESS с этим транспортом.",
+        ),
+    ],
+)
+def test_open_file_explains_unsupported_vless_transport_without_leaking_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    network: str,
+    expected_message: str,
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    source_config = json.loads(
+        (Path(__file__).parent / "fixtures/source_happ_vless_reality_1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    stream_settings = source_config["outbounds"][0]["streamSettings"]
+    stream_settings["network"] = network
+    stream_settings["grpcSettings"] = {
+        "authority": "private-authority.example",
+        "multiMode": False,
+        "serviceName": "private-service",
+    }
+    source_path = tmp_path / "unsupported.json"
+    source_path.write_text(json.dumps(source_config), encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *_args: (str(source_path), "JSON (*.json)"),
+    )
+
+    window._load_source_file()
+
+    assert warnings == [expected_message]
+    assert window.source_editor.toPlainText() == ""
+    assert window.settings.last_import_directory == ""
+    window.deleteLater()
+    app.processEvents()
+
+
+@pytest.mark.parametrize(
+    "target_name", ["window", "host_edit", "source_editor", "old_preview"]
+)
+def test_drop_imports_file_anywhere_in_main_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_name: str,
+):
+    app = QApplication.instance() or QApplication([])
+    window = _drop_test_window(tmp_path)
+    window.show()
+    app.processEvents()
+    target = window if target_name == "window" else getattr(window, target_name)
+    if target_name in ("source_editor", "old_preview"):
+        target = target.viewport()
+    config_path = tmp_path / "source.json"
+    config_text = '{"outbounds": [{"type": "vless"}]}'
+    config_path.write_text(config_text, encoding="utf-8-sig")
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(config_path))])
+    preview_calls: list[str] = []
+    monkeypatch.setattr(
+        window, "_prepare_preview_if_ready", lambda: preview_calls.append("prepared")
+    )
+    offered_actions = Qt.DropAction.CopyAction | Qt.DropAction.MoveAction
+
+    enter = QDragEnterEvent(
+        QPoint(5, 5),
+        offered_actions,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    enter.setDropAction(Qt.DropAction.MoveAction)
+    app.sendEvent(target, enter)
+    assert window.drop_hint.isVisible()
+    assert window.drop_hint.geometry() == window.centralWidget().rect()
+    move = QDragMoveEvent(
+        QPoint(5, 5),
+        offered_actions,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    move.setDropAction(Qt.DropAction.MoveAction)
+    app.sendEvent(target, move)
+    drop = QDropEvent(
+        QPointF(5, 5),
+        offered_actions,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    drop.setDropAction(Qt.DropAction.MoveAction)
+    app.sendEvent(target, drop)
+
+    assert enter.isAccepted()
+    assert move.isAccepted()
+    assert drop.isAccepted()
+    assert enter.dropAction() == Qt.DropAction.CopyAction
+    assert move.dropAction() == Qt.DropAction.CopyAction
+    assert drop.dropAction() == Qt.DropAction.CopyAction
+    assert config_path.is_file()
+    assert not window.drop_hint.isVisible()
+    assert window.source_editor.toPlainText() == config_text
+    assert window.source_name_label.text() == "Загружен файл: source.json"
+    assert window.settings.last_import_directory == str(tmp_path)
+    assert preview_calls == ["prepared"]
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_drag_leave_hides_drop_hint(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    window = _drop_test_window(tmp_path)
+    window.show()
+    app.processEvents()
+    config_path = tmp_path / "source.json"
+    config_path.write_text('{"outbounds": [{"type": "vless"}]}', encoding="utf-8")
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(config_path))])
+    enter = QDragEnterEvent(
+        QPoint(5, 5),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    app.sendEvent(window.host_edit, enter)
+    assert window.drop_hint.isVisible()
+
+    app.sendEvent(window.host_edit, QDragLeaveEvent())
+
+    assert not window.drop_hint.isVisible()
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("source", ["directory", "remote_url", "multiple_files"])
+def test_drop_rejects_non_single_local_files(tmp_path: Path, source: str):
+    app = QApplication.instance() or QApplication([])
+    window = _drop_test_window(tmp_path)
+    config_path = tmp_path / "source.json"
+    config_path.write_text('{"outbounds": [{"type": "vless"}]}', encoding="utf-8")
+    mime_data = QMimeData()
+    urls = {
+        "directory": [QUrl.fromLocalFile(str(tmp_path))],
+        "remote_url": [QUrl("https://example.test/source.json")],
+        "multiple_files": [
+            QUrl.fromLocalFile(str(config_path)),
+            QUrl.fromLocalFile(str(config_path)),
+        ],
+    }
+    mime_data.setUrls(urls[source])
+
+    enter = QDragEnterEvent(
+        QPoint(5, 5),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    app.sendEvent(window.host_edit, enter)
+    drop = QDropEvent(
+        QPointF(5, 5),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    app.sendEvent(window.host_edit, drop)
+
+    assert not enter.isAccepted()
+    assert not drop.isAccepted()
+    assert window.source_editor.toPlainText() == ""
+    assert window.settings.last_import_directory == ""
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_drop_rejected_during_operation(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    window = _drop_test_window(tmp_path)
+    window.show()
+    app.processEvents()
+    config_path = tmp_path / "source.json"
+    config_path.write_text('{"outbounds": [{"type": "vless"}]}', encoding="utf-8")
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(config_path))])
+    hover = QDragEnterEvent(
+        QPoint(5, 5),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    app.sendEvent(window.old_preview.viewport(), hover)
+    assert hover.isAccepted()
+    assert window.drop_hint.isVisible()
+    window._set_busy(True)
+    assert not window.drop_hint.isVisible()
+
+    enter = QDragEnterEvent(
+        QPoint(5, 5),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    app.sendEvent(window.old_preview.viewport(), enter)
+    drop = QDropEvent(
+        QPointF(5, 5),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    app.sendEvent(window.old_preview.viewport(), drop)
+
+    assert not enter.isAccepted()
+    assert not drop.isAccepted()
+    assert window.source_editor.toPlainText() == ""
+    window._set_busy(False)
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_drop_uses_file_validation_and_keeps_previous_source_on_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    app = QApplication.instance() or QApplication([])
+    window = _drop_test_window(tmp_path)
+    window.show()
+    app.processEvents()
+    existing_text = '{"outbounds": [{"type": "vless"}]}'
+    window._set_source_content(existing_text, "Предыдущий конфиг")
+    invalid_path = tmp_path / "invalid.json"
+    invalid_path.write_text('{"outbounds": [', encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(invalid_path))])
+
+    enter = QDragEnterEvent(
+        QPoint(5, 5),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    app.sendEvent(window, enter)
+
+    drop = QDropEvent(
+        QPointF(5, 5),
+        Qt.DropAction.CopyAction,
+        mime_data,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    app.sendEvent(window, drop)
+
+    assert window.source_editor.toPlainText() == existing_text
+    assert window.source_name_label.text() == "Предыдущий конфиг"
+    assert window.settings.last_import_directory == ""
+    assert len(warnings) == 1
+    assert "некорректный JSON" in warnings[0]
+    window.close()
+    window.deleteLater()
+    app.processEvents()
+
+
+def _drop_test_window(tmp_path: Path) -> MainWindow:
+    store = PortableSettingsStore(tmp_path / "settings.ini")
+    store.save(AppSettings(check_updates_on_startup=False))
+    return MainWindow(store, FakeCredentialStore())
+
+
+def test_paste_rejects_multiple_copied_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    mime_data = QMimeData()
+    mime_data.setUrls(
+        [
+            QUrl.fromLocalFile(str(tmp_path / "first.json")),
+            QUrl.fromLocalFile(str(tmp_path / "second.json")),
+        ]
+    )
+    QApplication.clipboard().setMimeData(mime_data)
+
+    window._paste_source()
+
+    assert window.source_editor.toPlainText() == ""
+    assert warnings and "Данный формат не поддерживается" in warnings[0]
     window.deleteLater()
     app.processEvents()
 

@@ -4,7 +4,7 @@ import pytest
 
 from singroute.application.operation import prepare_config_update
 from singroute.core.converters import normalize_outbound_to_singbox
-from singroute.core.errors import ConfigPatchError
+from singroute.core.errors import ConfigPatchError, UnsupportedVlessTransportError
 
 
 def test_singbox_outbound_is_returned_as_deep_copy():
@@ -53,6 +53,28 @@ def test_xray_vless_reality_ignores_spider_x():
     result = normalize_outbound_to_singbox(_xray_vless_reality_outbound())
 
     assert "spiderX" not in json.dumps(result)
+
+
+def test_xray_vless_grpc_reports_unsupported_transport():
+    outbound = _xray_vless_reality_outbound()
+    outbound["streamSettings"]["network"] = "grpc"
+    outbound["streamSettings"]["grpcSettings"] = {"serviceName": "test-service"}
+
+    with pytest.raises(UnsupportedVlessTransportError) as raised:
+        normalize_outbound_to_singbox(outbound)
+
+    assert raised.value.network == "grpc"
+
+
+def test_unknown_vless_transport_value_is_not_stored_in_error():
+    outbound = _xray_vless_reality_outbound()
+    outbound["streamSettings"]["network"] = "private-network-value"
+
+    with pytest.raises(UnsupportedVlessTransportError) as raised:
+        normalize_outbound_to_singbox(outbound)
+
+    assert raised.value.network is None
+    assert "private-network-value" not in str(raised.value)
 
 
 def test_xray_vless_reality_omits_absent_flow_and_fingerprint():
