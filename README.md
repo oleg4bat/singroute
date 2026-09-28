@@ -28,6 +28,8 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 
 SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP,
 and HAPP Hysteria2.
+For HAPP/Xray VLESS Reality over TCP, the converted outbound allows both TCP
+and UDP traffic. sing-box chooses its default UDP packet encoding.
 
 ## Portable usage
 
@@ -43,6 +45,8 @@ restoring it if minimized.
 Version 0.5.0 adds file drag and drop, imports a copied config file with Ctrl+V,
 and identifies unsupported VLESS transports in the import message. It also
 requires a valid active router outbound before replacement.
+Version 0.5.1 fixes HAPP/Xray VLESS conversion so TCP transport no longer
+restricts the sing-box outbound to TCP traffic.
 
 Python and an installer are not required. After settings are saved, SingRoute
 creates this file next to the executable:
@@ -176,8 +180,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.5.0 -m "Release v0.5.0"
-git push origin v0.5.0
+git tag -a v0.5.1 -m "Release v0.5.1"
+git push origin v0.5.1
 ```
 
 The `Release` workflow validates metadata and formatting, audits Python

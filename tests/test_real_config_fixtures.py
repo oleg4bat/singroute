@@ -40,7 +40,8 @@ def test_source_happ_vless_reality_1_fixture_patches_router_config():
     assert outbound["server_port"] == 443
     assert outbound["uuid"] == "TEST-HAPP-VLESS-UUID-1"
     assert outbound["flow"] == "xtls-rprx-vision"
-    assert outbound["network"] == "tcp"
+    assert "network" not in outbound
+    assert "packet_encoding" not in outbound
     assert outbound["tag"] == router_base["outbounds"][0]["tag"]
     assert outbound["tls"]["enabled"] is True
     assert outbound["tls"]["server_name"] == "reality-1.example.test"
@@ -66,7 +67,8 @@ def test_source_happ_vless_reality_2_fixture_does_not_copy_source_sections():
     assert outbound["server_port"] == 9443
     assert outbound["uuid"] == "TEST-HAPP-VLESS-UUID-2"
     assert outbound["flow"] == "xtls-rprx-vision"
-    assert outbound["network"] == "tcp"
+    assert "network" not in outbound
+    assert "packet_encoding" not in outbound
     assert outbound["tls"]["enabled"] is True
     assert outbound["tls"]["server_name"] == "reality-2.example.test"
     assert outbound["tls"]["reality"]["enabled"] is True

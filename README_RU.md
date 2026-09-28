@@ -29,6 +29,8 @@ OpenWrt.
 
 SingRoute поддерживает нативные outbounds sing-box, HAPP/Xray VLESS Reality TCP
 и HAPP Hysteria2.
+При преобразовании HAPP/Xray VLESS Reality TCP outbound пропускает трафик TCP
+и UDP. Кодирование UDP выбирается по умолчанию в sing-box.
 
 ## Portable-режим
 
@@ -44,6 +46,8 @@ SingRoute.exe
 Версия 0.5.0 добавляет перенос файла в окно, вставку скопированного файла через
 Ctrl+V и пояснение о неподдерживаемом транспорте VLESS при импорте. Перед заменой
 она также проверяет наличие корректного активного outbound на роутере.
+Версия 0.5.1 исправляет преобразование HAPP/Xray VLESS: TCP-транспорт больше не
+ограничивает трафик sing-box outbound только TCP.
 
 Python и установщик не требуются. После сохранения настроек рядом с EXE
 создаётся файл:
@@ -177,8 +181,8 @@ production EXE через настоящий код загрузки и подг
 отправьте тег с той же версией:
 
 ```powershell
-git tag -a v0.5.0 -m "Release v0.5.0"
-git push origin v0.5.0
+git tag -a v0.5.1 -m "Release v0.5.1"
+git push origin v0.5.1
 ```
 
 Workflow `Release` проверит метаданные и форматирование, зависимости Python и

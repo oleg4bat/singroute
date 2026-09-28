@@ -34,7 +34,6 @@ def test_xray_vless_reality_tcp_converts_to_singbox_vless():
         "server_port": 443,
         "uuid": "uuid",
         "flow": "xtls-rprx-vision",
-        "network": "tcp",
         "tls": {
             "enabled": True,
             "server_name": "example.com",

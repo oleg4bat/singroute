@@ -68,7 +68,8 @@ def _convert_vless_reality_tcp(outbound: dict[str, Any]) -> dict[str, Any]:
         }
     )
     _copy_optional(first_user, result, "flow")
-    result["network"] = "tcp"
+    # Xray streamSettings.network selects the server transport; sing-box network
+    # filters proxied traffic, so copying "tcp" here would disable UDP.
 
     tls: dict[str, Any] = {
         "enabled": True,
