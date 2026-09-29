@@ -18,7 +18,8 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
    file can also be dropped anywhere in the main window.
 3. Converts a supported proxy outbound to the sing-box format.
 4. Shows the current and proposed outbound while masking passwords, UUIDs, and
-   private keys.
+   private keys. Fields use a consistent, documentation-style order in the
+   preview and the replaced outbound.
 5. Validates a temporary configuration with `sing-box check`.
 6. Creates a temporary backup on the router after validation succeeds.
 7. Installs the configuration atomically and restarts the OpenWrt service.
@@ -26,10 +27,12 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 9. Downloads verified SingRoute updates, replaces the portable executable after
    shutdown, and launches the updated application.
 
-SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP,
-and HAPP Hysteria2.
-For HAPP/Xray VLESS Reality over TCP, the converted outbound allows both TCP
-and UDP traffic. sing-box chooses its default UDP packet encoding.
+SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP
+or gRPC, HAPP/Xray Trojan over TCP/TLS or TCP/Reality, and HAPP Hysteria2.
+Trojan and VLESS Reality gRPC also accept the standard gRPC transport.
+Converted VLESS outbounds allow both TCP and UDP traffic; sing-box chooses its
+default UDP packet encoding. Xray gRPC `multiMode: true` and a nonempty
+`authority` cannot be represented by sing-box and are rejected during import.
 
 ## Portable usage
 
@@ -47,6 +50,9 @@ and identifies unsupported VLESS transports in the import message. It also
 requires a valid active router outbound before replacement.
 Version 0.5.1 fixes HAPP/Xray VLESS conversion so TCP transport no longer
 restricts the sing-box outbound to TCP traffic.
+Version 0.6.0 adds HAPP/Xray Trojan and gRPC import, orders outbound fields in
+the preview, and lets you confirm a changed router SSH host key after checking
+its fingerprint on the router.
 
 Python and an installer are not required. After settings are saved, SingRoute
 creates this file next to the executable:
@@ -120,7 +126,13 @@ to the router user, address, and port.
 
 An unknown router SSH host key requires explicit fingerprint confirmation. The
 confirmed public key is stored in the INI file and is the application's only
-trust source for that router; a later key change blocks the connection.
+trust source for that router. If a router reset changes its key, the app shows
+the new SHA256 fingerprint and requires fresh confirmation before connecting.
+Compare it directly on the router (for Dropbear, for example:
+`dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key`; use the host key
+file matching the algorithm shown in the dialog). The connection remains
+blocked until confirmation. Password-only authentication does not bypass the
+router host key check.
 
 Version 0.3.1 also uses a private randomized remote operation directory, an
 atomic update lock held through service verification or rollback, and a hash
@@ -180,8 +192,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.5.1 -m "Release v0.5.1"
-git push origin v0.5.1
+git tag -a v0.6.0 -m "Release v0.6.0"
+git push origin v0.6.0
 ```
 
 The `Release` workflow validates metadata and formatting, audits Python

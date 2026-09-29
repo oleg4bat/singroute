@@ -88,6 +88,7 @@ from singroute.application.router_update import (
 from singroute.core.errors import (
     ConfigParseError,
     ConfigPatchError,
+    UnsupportedGrpcSettingError,
     UnsupportedVlessTransportError,
 )
 from singroute.gui.advanced_settings import AdvancedSettingsDialog
@@ -549,7 +550,6 @@ class MainWindow(QMainWindow):
                 message = "JSON слишком глубоко вложен."
         elif isinstance(error, UnsupportedVlessTransportError):
             transport_name = {
-                "grpc": "gRPC",
                 "ws": "WebSocket",
                 "http": "HTTP",
                 "httpupgrade": "HTTP Upgrade",
@@ -563,6 +563,18 @@ class MainWindow(QMainWindow):
                     "SingRoute пока не импортирует VLESS с транспортом "
                     f"{transport_name}."
                 )
+        elif isinstance(error, UnsupportedGrpcSettingError):
+            if error.field == "multiMode":
+                message = (
+                    "Этот gRPC-конфиг использует Xray multiMode. "
+                    "sing-box не поддерживает этот режим."
+                )
+            elif error.field == "authority":
+                message = (
+                    "Этот gRPC-конфиг задаёт отдельный authority. Импорт остановлен."
+                )
+            else:
+                message = "Этот gRPC-конфиг содержит неподдерживаемые настройки."
         else:
             message = (
                 "Данный формат не поддерживается: конфиг не содержит "
@@ -1078,15 +1090,27 @@ class MainWindow(QMainWindow):
             and failed_client is self._connected_client
         ):
             self._disconnect_router("SSH-соединение потеряно")
-        if isinstance(error, UnknownHostKeyError):
+        if isinstance(error, (UnknownHostKeyError, HostKeyMismatchError)):
             retry = self._retry_action
             self._retry_action = None
+            changed = isinstance(error, HostKeyMismatchError)
+            title = (
+                "SSH-ключ роутера изменился" if changed else "Новый SSH-ключ роутера"
+            )
+            introduction = (
+                "Ранее подтверждённый SSH-ключ роутера изменился. "
+                "Это возможно после сброса настроек.\n\n"
+                if changed
+                else "Роутер предъявил новый SSH-ключ.\n\n"
+            )
             answer = _ask_yes_no(
                 self,
-                "Новый SSH-ключ роутера",
-                f"Роутер {error.info.host}:{error.info.port} предъявил ключ:\n\n"
+                title,
+                introduction
+                + f"Роутер {error.info.host}:{error.info.port} предъявил ключ:\n\n"
                 f"{error.info.algorithm}\n{error.info.fingerprint}\n\n"
-                "Сверьте fingerprint с роутером. Доверять этому ключу?",
+                "Сверьте SHA256-отпечаток на самом роутере. "
+                "Если он совпадает, доверять этому ключу?",
                 QMessageBox.StandardButton.No,
             )
             if answer == QMessageBox.StandardButton.Yes:
@@ -1101,6 +1125,8 @@ class MainWindow(QMainWindow):
                 )
                 if retry is not None:
                     retry()
+            else:
+                self.status_label.setText("SSH-ключ не подтверждён")
             return
         self._retry_action = None
         self._show_error(error)

@@ -27,6 +27,74 @@ def test_outbounds_first_item_is_replaced():
     assert result["outbounds"][1] == {"type": "block", "tag": "blocked"}
 
 
+def test_replaced_vless_outbound_has_stable_field_order_without_changing_values():
+    router_config = {
+        "dns": {"servers": ["1.1.1.1"]},
+        "outbounds": [{"tag": "router-proxy", "type": "direct"}],
+    }
+    imported = {
+        "domain_strategy": "",
+        "flow": "xtls-rprx-vision",
+        "server_port": 8443,
+        "tls": {
+            "utls": {"fingerprint": "firefox", "enabled": True},
+            "reality": {"short_id": "secret", "public_key": "secret", "enabled": True},
+            "server_name": "example.test",
+            "enabled": True,
+        },
+        "server": "vpn.test",
+        "type": "vless",
+        "uuid": "secret",
+    }
+
+    result = patch_router_config(router_config, imported)
+    outbound = result["outbounds"][0]
+
+    assert list(outbound) == [
+        "type",
+        "tag",
+        "server",
+        "server_port",
+        "uuid",
+        "flow",
+        "tls",
+        "domain_strategy",
+    ]
+    assert list(outbound["tls"]) == ["enabled", "server_name", "reality", "utls"]
+    assert list(outbound["tls"]["reality"]) == ["enabled", "public_key", "short_id"]
+    assert outbound["tag"] == "router-proxy"
+    assert outbound["tls"]["reality"]["short_id"] == "secret"
+    assert result["dns"] == router_config["dns"]
+    assert imported["tls"]["reality"]["short_id"] == "secret"
+    assert "tag" not in imported
+
+
+def test_replaced_hysteria2_outbound_orders_fields_without_reordering_arrays():
+    router_config = {"outbounds": [{"type": "direct", "tag": "router-proxy"}]}
+    imported = {
+        "tls": {"server_name": "example.test", "enabled": True},
+        "password": "secret",
+        "server_ports": ["2080:3000", "4000"],
+        "server": "vpn.test",
+        "type": "hysteria2",
+        "obfs": {"password": "obfs-secret", "type": "salamander"},
+    }
+
+    outbound = patch_router_config(router_config, imported)["outbounds"][0]
+
+    assert list(outbound) == [
+        "type",
+        "tag",
+        "server",
+        "server_ports",
+        "obfs",
+        "password",
+        "tls",
+    ]
+    assert outbound["server_ports"] == ["2080:3000", "4000"]
+    assert outbound["password"] == "secret"
+
+
 def test_other_router_config_sections_are_preserved():
     router_config = {
         "log": {"level": "debug"},

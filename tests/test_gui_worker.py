@@ -36,7 +36,12 @@ from singroute.gui.advanced_settings import AdvancedSettingsDialog
 from singroute.gui.main_window import ConnectedRouter, MainWindow, _ask_yes_no
 from singroute.infrastructure.credentials import CredentialTarget
 from singroute.infrastructure.settings import AppSettings, PortableSettingsStore
-from singroute.infrastructure.ssh_router import SshRouterClient
+from singroute.infrastructure.ssh_router import (
+    HostKeyInfo,
+    HostKeyMismatchError,
+    SshRouterClient,
+    UnknownHostKeyError,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -841,10 +846,6 @@ def test_open_file_uses_same_source_validation(
     ("network", "expected_message"),
     [
         (
-            "grpc",
-            "SingRoute пока не импортирует VLESS с транспортом gRPC.",
-        ),
-        (
             "ws",
             "SingRoute пока не импортирует VLESS с транспортом WebSocket.",
         ),
@@ -896,6 +897,36 @@ def test_open_file_explains_unsupported_vless_transport_without_leaking_values(
     assert warnings == [expected_message]
     assert window.source_editor.toPlainText() == ""
     assert window.settings.last_import_directory == ""
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_import_explains_unsupported_grpc_multi_mode_without_leaking_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
+    )
+    source = (
+        Path(__file__).parent / "fixtures/source_happ_vless_reality_grpc.json"
+    ).read_text(encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    imported = window._import_source_text(source, "gRPC", from_file=False)
+
+    assert not imported
+    assert warnings == [
+        "Этот gRPC-конфиг использует Xray multiMode. "
+        "sing-box не поддерживает этот режим."
+    ]
+    assert "sample-grpc-service" not in warnings[0]
+    assert window.source_editor.toPlainText() == ""
     window.deleteLater()
     app.processEvents()
 
@@ -1269,6 +1300,56 @@ def test_yes_no_question_uses_russian_button_labels(tmp_path: Path, monkeypatch)
 
     assert answer == QMessageBox.StandardButton.Yes
     assert captured == {"yes": "Да", "no": "Нет"}
+    window.deleteLater()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize(
+    ("answer", "confirmed"),
+    [
+        (QMessageBox.StandardButton.No, False),
+        (QMessageBox.StandardButton.Yes, True),
+    ],
+)
+def test_host_key_requires_confirmation_before_saving_and_retrying(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed: bool,
+    answer: QMessageBox.StandardButton,
+    confirmed: bool,
+):
+    app = QApplication.instance() or QApplication([])
+    store = PortableSettingsStore(tmp_path / "settings.ini")
+    old_pin = "ssh-ed25519 OLD"
+    store.save(
+        AppSettings(trusted_host_keys={"192.168.1.1:22": old_pin} if changed else {})
+    )
+    window = MainWindow(store, FakeCredentialStore())
+    info = HostKeyInfo("192.168.1.1", 22, "ssh-ed25519", "NEW", "SHA256:new")
+    error = HostKeyMismatchError(info) if changed else UnknownHostKeyError(info)
+    retries: list[bool] = []
+    prompts: list[tuple[str, str, QMessageBox.StandardButton]] = []
+
+    def ask_yes_no(_parent, title, message, default):
+        prompts.append((title, message, default))
+        return answer
+
+    monkeypatch.setattr(main_window_module, "_ask_yes_no", ask_yes_no)
+    window._retry_action = lambda: retries.append(True)
+
+    window._worker_failed(error)
+
+    assert len(prompts) == 1
+    title, message, default = prompts[0]
+    assert ("изменился" in title) is changed
+    assert "SHA256:new" in message
+    assert "на самом роутере" in message
+    assert default == QMessageBox.StandardButton.No
+    assert store.load().trusted_host_keys.get("192.168.1.1:22") == (
+        info.trust_token if confirmed else old_pin if changed else None
+    )
+    assert retries == ([True] if confirmed else [])
     window.deleteLater()
     app.processEvents()
 

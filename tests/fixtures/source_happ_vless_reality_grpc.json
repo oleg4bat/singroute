@@ -1,0 +1,42 @@
+{
+  "remarks": "Anonymized HAPP VLESS Reality gRPC export",
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "remarks": "gRPC server",
+      "settings": {
+        "vnext": [
+          {
+            "address": "198.51.100.20",
+            "port": 7444,
+            "users": [
+              {
+                "encryption": "none",
+                "id": "00000000-0000-4000-8000-000000000001"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "grpcSettings": {
+          "authority": "",
+          "multiMode": true,
+          "serviceName": "sample-grpc-service"
+        },
+        "network": "grpc",
+        "realitySettings": {
+          "fingerprint": "qq",
+          "publicKey": "CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "serverName": "grpc.example.test",
+          "shortId": "0123456789abcdef",
+          "show": false
+        },
+        "security": "reality"
+      },
+      "tag": "proxy"
+    },
+    {"protocol": "freedom", "tag": "direct"},
+    {"protocol": "blackhole", "tag": "block"}
+  ]
+}

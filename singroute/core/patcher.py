@@ -7,9 +7,10 @@ from typing import Any
 
 from .converters import normalize_outbound_to_singbox
 from .errors import ConfigPatchError
+from .outbound_order import order_outbound
 
 SERVICE_OUTBOUND_TYPES = {"direct", "block", "dns", "selector", "urltest"}
-SUPPORTED_XRAY_PROTOCOLS = {"vless", "hysteria"}
+SUPPORTED_XRAY_PROTOCOLS = {"vless", "hysteria", "trojan"}
 
 
 def select_exported_outbound(
@@ -102,6 +103,6 @@ def patch_router_config(
         )
 
     replacement_outbound["tag"] = old_tag
-    outbounds[0] = replacement_outbound
+    outbounds[0] = order_outbound(replacement_outbound)
 
     return patched_config

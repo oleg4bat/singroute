@@ -35,6 +35,33 @@ def test_summarize_router_outbound_masks_current_router_secrets():
     }
 
 
+def test_router_preview_uses_stable_order_and_masks_secrets():
+    summary = summarize_router_outbound(
+        json.dumps(
+            {
+                "outbounds": [
+                    {
+                        "tls": {
+                            "reality": {"short_id": "hidden", "enabled": True},
+                            "server_name": "example.test",
+                            "enabled": True,
+                        },
+                        "uuid": "hidden",
+                        "server": "vpn.test",
+                        "tag": "proxy",
+                        "type": "vless",
+                    }
+                ]
+            }
+        )
+    )
+
+    assert list(summary) == ["type", "tag", "server", "uuid", "tls"]
+    assert list(summary["tls"]) == ["enabled", "server_name", "reality"]
+    assert summary["uuid"] == "***"
+    assert summary["tls"]["reality"]["short_id"] == "***"
+
+
 def test_summarize_masks_case_and_extended_secret_names_recursively():
     summary = summarize_router_outbound(
         json.dumps(

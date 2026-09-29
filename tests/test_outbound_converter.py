@@ -1,10 +1,13 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from singroute.application.operation import prepare_config_update
 from singroute.core.converters import normalize_outbound_to_singbox
 from singroute.core.errors import ConfigPatchError, UnsupportedVlessTransportError
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_singbox_outbound_is_returned_as_deep_copy():
@@ -54,15 +57,87 @@ def test_xray_vless_reality_ignores_spider_x():
     assert "spiderX" not in json.dumps(result)
 
 
-def test_xray_vless_grpc_reports_unsupported_transport():
+def test_xray_vless_reality_grpc_preserves_service_name():
     outbound = _xray_vless_reality_outbound()
     outbound["streamSettings"]["network"] = "grpc"
-    outbound["streamSettings"]["grpcSettings"] = {"serviceName": "test-service"}
+    outbound["streamSettings"]["grpcSettings"] = {
+        "serviceName": "test-service",
+        "multiMode": False,
+        "authority": "",
+    }
+    del outbound["settings"]["vnext"][0]["users"][0]["flow"]
 
-    with pytest.raises(UnsupportedVlessTransportError) as raised:
+    result = normalize_outbound_to_singbox(outbound)
+
+    assert result["transport"] == {"type": "grpc", "service_name": "test-service"}
+    assert "network" not in result
+    assert "packet_encoding" not in result
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("authority", "private.example.test"),
+        ("multiMode", True),
+        ("user_agent", "private-agent"),
+    ],
+)
+def test_xray_vless_grpc_rejects_unrepresentable_settings(field, value):
+    outbound = _xray_vless_reality_outbound()
+    outbound["streamSettings"]["network"] = "grpc"
+    outbound["streamSettings"]["grpcSettings"] = {
+        "serviceName": "test-service",
+        field: value,
+    }
+
+    with pytest.raises(ConfigPatchError, match="Unsupported gRPC setting") as raised:
         normalize_outbound_to_singbox(outbound)
 
-    assert raised.value.network == "grpc"
+    assert str(value) not in str(raised.value)
+
+
+def test_xray_vless_grpc_rejects_invalid_multi_mode_type():
+    outbound = _xray_vless_reality_outbound()
+    outbound["streamSettings"]["network"] = "grpc"
+    outbound["streamSettings"]["grpcSettings"] = {"multiMode": "false"}
+
+    with pytest.raises(ConfigPatchError, match=r"grpcSettings\.multiMode"):
+        normalize_outbound_to_singbox(outbound)
+
+
+def test_anonymized_happ_grpc_export_rejects_multi_mode_without_leaking_values():
+    source = json.loads(
+        (FIXTURES / "source_happ_vless_reality_grpc.json").read_text(encoding="utf-8")
+    )
+    outbound = source["outbounds"][0]
+
+    with pytest.raises(ConfigPatchError, match=r"grpcSettings\.multiMode") as raised:
+        normalize_outbound_to_singbox(outbound)
+
+    assert outbound["streamSettings"]["grpcSettings"]["serviceName"] not in str(
+        raised.value
+    )
+
+
+def test_anonymized_happ_grpc_export_converts_when_multi_mode_disabled():
+    source = json.loads(
+        (FIXTURES / "source_happ_vless_reality_grpc.json").read_text(encoding="utf-8")
+    )
+    source["outbounds"][0]["streamSettings"]["grpcSettings"]["multiMode"] = False
+
+    result = prepare_config_update(
+        json.dumps(source),
+        json.dumps({"outbounds": [{"type": "direct", "tag": "router-proxy"}]}),
+    ).updated_config["outbounds"][0]
+
+    assert result["type"] == "vless"
+    assert result["tag"] == "router-proxy"
+    assert result["transport"] == {
+        "type": "grpc",
+        "service_name": "sample-grpc-service",
+    }
+    assert result["tls"]["utls"] == {"enabled": True, "fingerprint": "qq"}
+    assert "routing" not in result
 
 
 def test_unknown_vless_transport_value_is_not_stored_in_error():
@@ -139,9 +214,106 @@ def test_hysteria_unknown_version_raises_clear_error():
         normalize_outbound_to_singbox(outbound)
 
 
+def test_xray_trojan_tls_converts_to_singbox():
+    result = normalize_outbound_to_singbox(_xray_trojan_outbound())
+
+    assert result == {
+        "type": "trojan",
+        "tag": "proxy",
+        "server": "trojan.example.test",
+        "server_port": 443,
+        "password": "test-password",
+        "tls": {
+            "enabled": True,
+            "insecure": False,
+            "server_name": "sni.example.test",
+            "alpn": ["h2", "http/1.1"],
+            "utls": {"enabled": True, "fingerprint": "firefox"},
+        },
+    }
+
+
+def test_anonymized_happ_trojan_export_patches_only_router_server():
+    source = (FIXTURES / "source_happ_trojan_tls.json").read_text(encoding="utf-8")
+    router = {
+        "dns": {"servers": ["1.1.1.1"]},
+        "outbounds": [
+            {"type": "vless", "tag": "router-proxy"},
+            {"type": "direct", "tag": "direct"},
+        ],
+    }
+
+    result = prepare_config_update(source, json.dumps(router)).updated_config
+
+    assert result["outbounds"][0] == {
+        "type": "trojan",
+        "tag": "router-proxy",
+        "server": "198.51.100.10",
+        "server_port": 7443,
+        "password": "TEST-TROJAN-PASSWORD",
+        "tls": {
+            "enabled": True,
+            "server_name": "trojan.example.test",
+            "insecure": False,
+            "utls": {"enabled": True, "fingerprint": "firefox"},
+        },
+    }
+    assert result["dns"] == router["dns"]
+    assert result["outbounds"][1] == router["outbounds"][1]
+    assert "remarks" not in result["outbounds"][0]
+
+
+def test_xray_trojan_direct_settings_and_grpc_reality():
+    outbound = _xray_trojan_outbound()
+    outbound["settings"] = outbound["settings"]["servers"][0]
+    outbound["streamSettings"] = {
+        "network": "grpc",
+        "security": "reality",
+        "grpcSettings": {"serviceName": "trojan-grpc"},
+        "realitySettings": {
+            "serverName": "sni.example.test",
+            "publicKey": "public-key",
+            "shortId": "01234567",
+        },
+    }
+
+    result = normalize_outbound_to_singbox(outbound)
+
+    assert result["type"] == "trojan"
+    assert result["transport"] == {"type": "grpc", "service_name": "trojan-grpc"}
+    assert result["tls"]["reality"]["public_key"] == "public-key"
+
+
+def test_xray_trojan_rejects_unsupported_transport_and_security():
+    outbound = _xray_trojan_outbound()
+    outbound["streamSettings"]["network"] = "ws"
+    with pytest.raises(ConfigPatchError, match="Unsupported Trojan transport"):
+        normalize_outbound_to_singbox(outbound)
+
+    outbound["streamSettings"]["network"] = "tcp"
+    outbound["streamSettings"]["security"] = "none"
+    with pytest.raises(ConfigPatchError, match="only TLS or Reality"):
+        normalize_outbound_to_singbox(outbound)
+
+
+def test_xray_trojan_rejects_connection_settings_it_cannot_preserve():
+    outbound = _xray_trojan_outbound()
+    outbound["streamSettings"]["tcpSettings"]["header"] = {"type": "http"}
+    with pytest.raises(ConfigPatchError, match="Unsupported Trojan TCP header"):
+        normalize_outbound_to_singbox(outbound)
+
+    outbound = _xray_trojan_outbound()
+    outbound["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"] = "secret"
+    with pytest.raises(
+        ConfigPatchError, match="Unsupported Trojan TLS setting"
+    ) as raised:
+        normalize_outbound_to_singbox(outbound)
+    assert "secret" not in str(raised.value)
+
+
 def test_unsupported_protocol_raises_clear_error():
-    with pytest.raises(ConfigPatchError, match="Unsupported outbound protocol: trojan"):
-        normalize_outbound_to_singbox({"protocol": "trojan"})
+    with pytest.raises(ConfigPatchError, match="Unsupported outbound protocol: vmess"):
+        normalize_outbound_to_singbox({"protocol": "vmess"})
 
 
 def test_application_accepts_xray_exported_config_and_writes_singbox_outbound():
@@ -262,6 +434,34 @@ def _xray_hysteria2_outbound():
                 "alpn": ["h3"],
                 "serverName": "mehceh2020store.ru",
             },
+        },
+        "tag": "proxy",
+    }
+
+
+def _xray_trojan_outbound():
+    return {
+        "protocol": "trojan",
+        "settings": {
+            "servers": [
+                {
+                    "address": "trojan.example.test",
+                    "port": 443,
+                    "password": "test-password",
+                    "email": "source-only@example.test",
+                }
+            ]
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": "sni.example.test",
+                "allowInsecure": False,
+                "alpn": ["h2", "http/1.1"],
+                "fingerprint": "firefox",
+            },
+            "tcpSettings": {"header": {"type": "none"}},
         },
         "tag": "proxy",
     }

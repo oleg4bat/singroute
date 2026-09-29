@@ -1,0 +1,31 @@
+{
+  "remarks": "Anonymized HAPP Trojan export",
+  "outbounds": [
+    {
+      "protocol": "trojan",
+      "remarks": "Trojan server",
+      "settings": {
+        "servers": [
+          {
+            "address": "198.51.100.10",
+            "password": "TEST-TROJAN-PASSWORD",
+            "port": 7443
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tcpSettings": {},
+        "tlsSettings": {
+          "allowInsecure": false,
+          "fingerprint": "firefox",
+          "serverName": "trojan.example.test"
+        }
+      },
+      "tag": "proxy"
+    },
+    {"protocol": "freedom", "tag": "direct"},
+    {"protocol": "blackhole", "tag": "block"}
+  ]
+}

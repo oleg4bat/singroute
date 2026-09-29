@@ -17,6 +17,16 @@ class UnsupportedVlessTransportError(ConfigPatchError):
         normalized = network.casefold() if isinstance(network, str) else None
         self.network = (
             normalized
-            if normalized in {"grpc", "ws", "http", "httpupgrade", "quic", "xhttp"}
+            if normalized in {"ws", "http", "httpupgrade", "quic", "xhttp"}
             else None
+        )
+
+
+class UnsupportedGrpcSettingError(ConfigPatchError):
+    """Raised when an Xray gRPC option cannot be represented by sing-box."""
+
+    def __init__(self, field: str) -> None:
+        self.field = field if field in {"authority", "multiMode"} else None
+        super().__init__(
+            f"Unsupported gRPC setting: grpcSettings.{self.field or 'other'}"
         )

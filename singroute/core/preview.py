@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .outbound_order import order_outbound
+
 SENSITIVE_FIELDS = {
     "api_key",
     "uuid",
@@ -30,7 +32,7 @@ MASK = "***"
 
 def summarize_outbound(outbound: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of an outbound with sensitive fields masked recursively."""
-    return _mask_sensitive_values(outbound)
+    return order_outbound(_mask_sensitive_values(outbound))
 
 
 def _mask_sensitive_values(value: Any) -> Any:
