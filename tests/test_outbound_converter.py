@@ -5,7 +5,11 @@ import pytest
 
 from singroute.application.operation import prepare_config_update
 from singroute.core.converters import normalize_outbound_to_singbox
-from singroute.core.errors import ConfigPatchError, UnsupportedVlessTransportError
+from singroute.core.errors import (
+    ConfigPatchError,
+    UnsupportedGrpcSettingError,
+    UnsupportedVlessTransportError,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -78,7 +82,6 @@ def test_xray_vless_reality_grpc_preserves_service_name():
     ("field", "value"),
     [
         ("authority", "private.example.test"),
-        ("multiMode", True),
         ("user_agent", "private-agent"),
     ],
 )
@@ -105,26 +108,48 @@ def test_xray_vless_grpc_rejects_invalid_multi_mode_type():
         normalize_outbound_to_singbox(outbound)
 
 
-def test_anonymized_happ_grpc_export_rejects_multi_mode_without_leaking_values():
+def test_xray_grpc_rejects_multi_mode_when_path_or_security_is_not_direct_reality():
+    outbound = _xray_vless_reality_outbound()
+    stream_settings = outbound["streamSettings"]
+    stream_settings["network"] = "grpc"
+    stream_settings["grpcSettings"] = {
+        "serviceName": "/custom/TunMulti",
+        "multiMode": True,
+    }
+
+    with pytest.raises(UnsupportedGrpcSettingError, match="multiMode"):
+        normalize_outbound_to_singbox(outbound)
+
+    outbound = _xray_trojan_outbound()
+    stream_settings = outbound["streamSettings"]
+    stream_settings["network"] = "grpc"
+    stream_settings["grpcSettings"] = {
+        "serviceName": "ordinary-service",
+        "multiMode": True,
+    }
+    with pytest.raises(UnsupportedGrpcSettingError, match="multiMode"):
+        normalize_outbound_to_singbox(outbound)
+
+
+def test_anonymized_happ_grpc_export_converts_multi_mode_to_regular_grpc():
     source = json.loads(
         (FIXTURES / "source_happ_vless_reality_grpc.json").read_text(encoding="utf-8")
     )
     outbound = source["outbounds"][0]
 
-    with pytest.raises(ConfigPatchError, match=r"grpcSettings\.multiMode") as raised:
-        normalize_outbound_to_singbox(outbound)
+    result = normalize_outbound_to_singbox(outbound)
 
-    assert outbound["streamSettings"]["grpcSettings"]["serviceName"] not in str(
-        raised.value
-    )
+    assert result["transport"] == {
+        "type": "grpc",
+        "service_name": "sample-grpc-service",
+    }
+    assert source["outbounds"][0]["streamSettings"]["grpcSettings"]["multiMode"]
 
 
-def test_anonymized_happ_grpc_export_converts_when_multi_mode_disabled():
+def test_anonymized_happ_grpc_export_prepares_router_update_with_multi_mode():
     source = json.loads(
         (FIXTURES / "source_happ_vless_reality_grpc.json").read_text(encoding="utf-8")
     )
-    source["outbounds"][0]["streamSettings"]["grpcSettings"]["multiMode"] = False
-
     result = prepare_config_update(
         json.dumps(source),
         json.dumps({"outbounds": [{"type": "direct", "tag": "router-proxy"}]}),

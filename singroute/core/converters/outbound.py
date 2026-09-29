@@ -199,15 +199,25 @@ def _convert_grpc_transport(stream_settings: dict[str, Any]) -> dict[str, Any]:
     if service_name:
         transport["service_name"] = service_name
 
-    # sing-box has no separate HTTP/2 authority or Xray TunMulti mode.
-    # Reject non-default values so the imported connection is not altered silently.
+    # An Xray Reality server registers both Tun and TunMulti for a regular
+    # service name. sing-box connects through Tun, so HAPP's client-side
+    # multiMode flag can be omitted for that direct-server case. Custom
+    # service paths can select different methods and must remain explicit.
+    multi_mode = grpc_settings.get("multiMode", False)
+    if type(multi_mode) is not bool:
+        raise ConfigPatchError("Invalid boolean field: grpcSettings.multiMode")
+    if multi_mode and (
+        stream_settings.get("security") != "reality" or service_name.startswith("/")
+    ):
+        raise UnsupportedGrpcSettingError("multiMode")
+
+    # sing-box has no separate HTTP/2 authority. Reject other non-default
+    # values so the imported connection is not altered silently.
     for key, value in grpc_settings.items():
-        if key == "serviceName":
+        if key in {"serviceName", "multiMode"}:
             continue
         if key == "authority" and not isinstance(value, str):
             raise ConfigPatchError("Invalid string field: grpcSettings.authority")
-        if key == "multiMode" and type(value) is not bool:
-            raise ConfigPatchError("Invalid boolean field: grpcSettings.multiMode")
         if value not in (None, "", False, 0):
             raise UnsupportedGrpcSettingError(key)
     return transport

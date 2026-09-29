@@ -45,9 +45,6 @@ def test_converted_happ_outbound_passes_real_singbox_check(
             "fingerprint": "firefox",
         }
         del stream_settings["tlsSettings"]
-    if fixture_name == "source_happ_vless_reality_grpc.json":
-        # The actual HAPP export uses Xray TunMulti, unsupported by sing-box.
-        source["outbounds"][0]["streamSettings"]["grpcSettings"]["multiMode"] = False
     outbound = select_exported_outbound(source)
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"outbounds": [outbound]}), encoding="utf-8")

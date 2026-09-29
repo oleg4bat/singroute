@@ -901,7 +901,7 @@ def test_open_file_explains_unsupported_vless_transport_without_leaking_values(
     app.processEvents()
 
 
-def test_import_explains_unsupported_grpc_multi_mode_without_leaking_service(
+def test_import_accepts_happ_grpc_multi_mode_for_reality(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     app = QApplication.instance() or QApplication([])
@@ -920,13 +920,43 @@ def test_import_explains_unsupported_grpc_multi_mode_without_leaking_service(
 
     imported = window._import_source_text(source, "gRPC", from_file=False)
 
+    assert imported
+    assert warnings == []
+    assert window.source_editor.toPlainText() == source
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_import_rejects_custom_grpc_multi_mode_path_without_leaking_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
+    )
+    source = json.loads(
+        (
+            Path(__file__).parent / "fixtures/source_happ_vless_reality_grpc.json"
+        ).read_text(encoding="utf-8")
+    )
+    source["outbounds"][0]["streamSettings"]["grpcSettings"]["serviceName"] = (
+        "/private-service/TunMulti"
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    imported = window._import_source_text(json.dumps(source), "gRPC", from_file=False)
+
     assert not imported
     assert warnings == [
-        "Этот gRPC-конфиг использует Xray multiMode. "
-        "sing-box не поддерживает этот режим."
+        "Этот gRPC-конфиг использует multiMode с нестандартным "
+        "путём или без Reality. Импорт остановлен."
     ]
-    assert "sample-grpc-service" not in warnings[0]
-    assert window.source_editor.toPlainText() == ""
+    assert "private-service" not in warnings[0]
     window.deleteLater()
     app.processEvents()
 

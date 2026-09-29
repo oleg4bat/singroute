@@ -32,8 +32,10 @@ SingRoute поддерживает нативные outbounds sing-box, HAPP/Xra
 TCP или gRPC, HAPP/Xray Trojan через TCP/TLS или TCP/Reality и HAPP Hysteria2.
 Для Trojan и VLESS Reality также поддерживается стандартный gRPC-транспорт.
 Преобразованный VLESS outbound пропускает TCP и UDP; кодирование UDP выбирается
-по умолчанию в sing-box. Импорт gRPC с Xray `multiMode: true` или непустым
-`authority` отклоняется: в sing-box нет соответствующих настроек.
+по умолчанию в sing-box. Для VLESS Reality с обычным именем сервиса Xray
+`multiMode: true` преобразуется в стандартный gRPC: сервер Xray принимает оба
+метода, `Tun` и `TunMulti`. Нестандартные gRPC-пути, `multiMode` без Reality и
+непустой `authority` отклоняются, если безопасное преобразование невозможно.
 
 ## Portable-режим
 
@@ -54,6 +56,8 @@ Ctrl+V и пояснение о неподдерживаемом транспо�
 Версия 0.6.0 добавляет импорт HAPP/Xray Trojan и gRPC, упорядочивает поля в
 предпросмотре и позволяет подтвердить новый SSH-ключ роутера после сверки его
 отпечатка на самом роутере.
+Версия 0.6.1 импортирует HAPP/Xray Reality gRPC с `multiMode: true`, если для
+обычного имени сервиса доступен стандартный метод сервера `Tun`.
 
 Python и установщик не требуются. После сохранения настроек рядом с EXE
 создаётся файл:
@@ -193,8 +197,8 @@ production EXE через настоящий код загрузки и подг
 отправьте тег с той же версией:
 
 ```powershell
-git tag -a v0.6.0 -m "Release v0.6.0"
-git push origin v0.6.0
+git tag -a v0.6.1 -m "Release v0.6.1"
+git push origin v0.6.1
 ```
 
 Workflow `Release` проверит метаданные и форматирование, зависимости Python и

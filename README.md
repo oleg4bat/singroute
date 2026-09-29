@@ -31,8 +31,10 @@ SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP
 or gRPC, HAPP/Xray Trojan over TCP/TLS or TCP/Reality, and HAPP Hysteria2.
 Trojan and VLESS Reality gRPC also accept the standard gRPC transport.
 Converted VLESS outbounds allow both TCP and UDP traffic; sing-box chooses its
-default UDP packet encoding. Xray gRPC `multiMode: true` and a nonempty
-`authority` cannot be represented by sing-box and are rejected during import.
+default UDP packet encoding. For VLESS Reality with a regular gRPC service name,
+Xray `multiMode: true` is converted to standard gRPC: Xray servers expose both
+`Tun` and `TunMulti` methods. Custom gRPC paths, non-Reality `multiMode`, and a
+nonempty `authority` are rejected when they cannot be converted safely.
 
 ## Portable usage
 
@@ -53,6 +55,8 @@ restricts the sing-box outbound to TCP traffic.
 Version 0.6.0 adds HAPP/Xray Trojan and gRPC import, orders outbound fields in
 the preview, and lets you confirm a changed router SSH host key after checking
 its fingerprint on the router.
+Version 0.6.1 imports HAPP/Xray Reality gRPC profiles with `multiMode: true`
+when a regular service name can use the server's standard `Tun` method.
 
 Python and an installer are not required. After settings are saved, SingRoute
 creates this file next to the executable:
@@ -192,8 +196,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.6.0 -m "Release v0.6.0"
-git push origin v0.6.0
+git tag -a v0.6.1 -m "Release v0.6.1"
+git push origin v0.6.1
 ```
 
 The `Release` workflow validates metadata and formatting, audits Python

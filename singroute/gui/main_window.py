@@ -566,8 +566,8 @@ class MainWindow(QMainWindow):
         elif isinstance(error, UnsupportedGrpcSettingError):
             if error.field == "multiMode":
                 message = (
-                    "Этот gRPC-конфиг использует Xray multiMode. "
-                    "sing-box не поддерживает этот режим."
+                    "Этот gRPC-конфиг использует multiMode с нестандартным "
+                    "путём или без Reality. Импорт остановлен."
                 )
             elif error.field == "authority":
                 message = (
