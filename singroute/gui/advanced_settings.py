@@ -6,7 +6,6 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from singroute.gui.brand import RoundedComboBox
 from singroute.infrastructure.settings import AppSettings
 
 
@@ -32,7 +32,7 @@ class AdvancedSettingsDialog(QDialog):
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(settings.port)
 
-        self.auth_combo = QComboBox()
+        self.auth_combo = RoundedComboBox()
         self.auth_combo.addItem("Автоматически (ключи → пароль)", "auto")
         self.auth_combo.addItem("Только SSH-ключ", "key")
         self.auth_combo.addItem("Только пароль", "password")

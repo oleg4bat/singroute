@@ -36,6 +36,10 @@ TCP или gRPC, HAPP/Xray Trojan через TCP/TLS или TCP/Reality и HAPP 
 `multiMode: true` преобразуется в стандартный gRPC: сервер Xray принимает оба
 метода, `Tun` и `TunMulti`. Нестандартные gRPC-пути, `multiMode` без Reality и
 непустой `authority` отклоняются, если безопасное преобразование невозможно.
+Для профиля XHTTP на роутере нужно ядро с поддержкой XHTTP: штатный sing-box
+его не использует. Если на роутере штатный sing-box, запросите у провайдера
+профиль VLESS Reality через TCP или gRPC для того же сервера. Простая замена
+названия транспорта в JSON не создаст рабочее подключение.
 
 ## Portable-режим
 
@@ -197,8 +201,8 @@ production EXE через настоящий код загрузки и подг
 отправьте тег с той же версией:
 
 ```powershell
-git tag -a v0.6.1 -m "Release v0.6.1"
-git push origin v0.6.1
+git tag -a v0.7.0 -m "Release v0.7.0"
+git push origin v0.7.0
 ```
 
 Workflow `Release` проверит метаданные и форматирование, зависимости Python и

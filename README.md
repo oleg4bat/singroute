@@ -35,6 +35,10 @@ default UDP packet encoding. For VLESS Reality with a regular gRPC service name,
 Xray `multiMode: true` is converted to standard gRPC: Xray servers expose both
 `Tun` and `TunMulti` methods. Custom gRPC paths, non-Reality `multiMode`, and a
 nonempty `authority` are rejected when they cannot be converted safely.
+XHTTP profiles require an XHTTP-capable router core; stock sing-box cannot use
+them. For a router running stock sing-box, request a VLESS Reality TCP or gRPC
+profile for the same server from the provider. Changing only the transport name
+in the exported JSON will not make the connection work.
 
 ## Portable usage
 
@@ -196,8 +200,8 @@ The project version is defined in `pyproject.toml`. Create and push a matching
 tag to publish a GitHub Release:
 
 ```powershell
-git tag -a v0.6.1 -m "Release v0.6.1"
-git push origin v0.6.1
+git tag -a v0.7.0 -m "Release v0.7.0"
+git push origin v0.7.0
 ```
 
 The `Release` workflow validates metadata and formatting, audits Python

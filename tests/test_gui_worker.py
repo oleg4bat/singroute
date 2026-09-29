@@ -227,6 +227,12 @@ def test_gui_entry_point_configures_and_shows_main_window(
         def setStyle(self, value: str) -> None:
             calls.append(("style", value))
 
+        def setWindowIcon(self, value) -> None:
+            calls.append(("icon", value.isNull()))
+
+        def setStyleSheet(self, value: str) -> None:
+            calls.append(("stylesheet", "QGroupBox" in value))
+
         def exec(self) -> int:
             return 7
 
@@ -257,6 +263,8 @@ def test_gui_entry_point_configures_and_shows_main_window(
     assert ("name", "SingRoute") in calls
     assert ("organization", "SingRoute") in calls
     assert ("style", "Fusion") in calls
+    assert ("icon", False) in calls
+    assert ("stylesheet", True) in calls
     assert ("window", "shown") in calls
     assert ("server", "closed") in calls
     assert ("lock", "released") in calls
@@ -848,6 +856,11 @@ def test_open_file_uses_same_source_validation(
         (
             "ws",
             "SingRoute пока не импортирует VLESS с транспортом WebSocket.",
+        ),
+        (
+            "xhttp",
+            "sing-box на роутере не поддерживает XHTTP. "
+            "Выберите у провайдера профиль VLESS Reality через TCP или gRPC.",
         ),
         (
             "private-network-value",

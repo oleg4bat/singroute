@@ -1,0 +1,201 @@
+<div id="singroute-concepts">
+  <style>
+    #singroute-concepts { width: 100%; color: light-dark(#1c2b3e, #edf2fa); font-family: "Segoe UI", Arial, sans-serif; }
+    #singroute-concepts * { box-sizing: border-box; }
+    #singroute-concepts [hidden] { display: none !important; }
+    #singroute-concepts .viz-carousel { width: 100%; }
+    #singroute-concepts .concept { min-height: 710px; padding: 4px 4px 18px; }
+    #singroute-concepts .identity { display: flex; align-items: center; gap: 16px; margin: 0 0 17px; }
+    #singroute-concepts .identity svg { width: 72px; height: 72px; flex: none; }
+    #singroute-concepts .identity .number { font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; opacity: .62; }
+    #singroute-concepts .identity .wordmark { font-size: 26px; font-weight: 750; letter-spacing: -.04em; line-height: 1.05; }
+    #singroute-concepts .identity .tagline { font-size: 13px; margin-top: 5px; opacity: .7; }
+    #singroute-concepts .mini-preview { margin-left: auto; display: flex; align-items: center; gap: 9px; font-size: 12px; opacity: .7; white-space: nowrap; }
+    #singroute-concepts .mini-preview svg { width: 28px; height: 28px; }
+    #singroute-concepts .mock-window { width: 100%; min-height: 570px; overflow: hidden; box-shadow: 0 18px 50px rgba(19, 40, 70, .14); }
+    #singroute-concepts .window-bar { height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; font-size: 12px; }
+    #singroute-concepts .window-controls { font-size: 15px; letter-spacing: 11px; white-space: nowrap; }
+    #singroute-concepts .field-label { font-size: 11px; font-weight: 700; letter-spacing: .065em; text-transform: uppercase; }
+    #singroute-concepts .muted { opacity: .58; }
+    #singroute-concepts .pill { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; border-radius: 999px; padding: 7px 11px; font-size: 12px; font-weight: 650; }
+    #singroute-concepts .pill::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    #singroute-concepts .line-field { border-radius: 9px; padding: 11px 12px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #singroute-concepts .mock-button { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 9px; padding: 10px 15px; font-family: inherit; font-size: 13px; font-weight: 650; white-space: nowrap; }
+    #singroute-concepts .mock-button.secondary { background: transparent; border: 1px solid currentColor; }
+    #singroute-concepts .preview-code { font-family: Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.8; }
+    #singroute-concepts .preview-code .dim { opacity: .48; }
+    #singroute-concepts .preview-code .value { font-weight: 700; }
+
+    /* 01: Route — approachable, task-first layout. */
+    #singroute-concepts .route { --sr-accent: #176f71; }
+    #singroute-concepts .route .mock-window { color: #142c49; background: #f3f6fa; border: 1px solid #d9e3ec; border-radius: 16px; }
+    #singroute-concepts .route .window-bar { background: #e9eff5; color: #4e6680; border-bottom: 1px solid #dbe5ed; }
+    #singroute-concepts .route .app-body { padding: 22px 25px 20px; display: grid; gap: 16px; }
+    #singroute-concepts .route .app-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; }
+    #singroute-concepts .route .app-head h2 { margin: 0; font-size: 25px; letter-spacing: -.04em; }
+    #singroute-concepts .route .app-head p { margin: 5px 0 0; font-size: 13px; color: #62758a; }
+    #singroute-concepts .route .pill { background: #e5f4ee; color: #14715d; }
+    #singroute-concepts .route .top-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+    #singroute-concepts .route .panel { background: #fff; border: 1px solid #dfe7ef; border-radius: 13px; padding: 15px; }
+    #singroute-concepts .route .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+    #singroute-concepts .route .step { display: inline-flex; align-items: center; justify-content: center; background: #e4f0ef; color: var(--sr-accent); width: 24px; height: 24px; border-radius: 8px; font-size: 12px; font-weight: 750; margin-right: 7px; }
+    #singroute-concepts .route .panel-title { font-size: 14px; font-weight: 700; }
+    #singroute-concepts .route .line-field { background: #f7fafc; border: 1px solid #dbe5ed; }
+    #singroute-concepts .route .form-mini { display: grid; grid-template-columns: 1.5fr 1fr; gap: 10px; }
+    #singroute-concepts .route .field-label { display: block; color: #778aa0; margin: 0 0 6px; }
+    #singroute-concepts .route .panel-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 11px; font-size: 12px; color: #64788e; }
+    #singroute-concepts .route .mock-button.secondary { color: #45647f; border-color: #ccdae5; background: #fff; }
+    #singroute-concepts .route .compare-panel { padding-bottom: 13px; }
+    #singroute-concepts .route .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    #singroute-concepts .route .compare-cell { border-radius: 10px; background: #f8fafc; border: 1px solid #e1e8ee; padding: 11px 12px; min-height: 112px; }
+    #singroute-concepts .route .compare-label { display: block; color: #5d7187; font-size: 12px; font-weight: 700; margin-bottom: 7px; }
+    #singroute-concepts .route .preview-code .value { color: var(--sr-accent); }
+    #singroute-concepts .route .action-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    #singroute-concepts .route .action-note { color: #62758a; font-size: 12px; }
+    #singroute-concepts .route .mock-button.primary { color: #fff; background: var(--sr-accent); }
+
+    /* 02: Console — dense comparison with a process rail. */
+    #singroute-concepts .console { --sr-accent: #62d8d0; }
+    #singroute-concepts .console .mock-window { color: #e8f4fa; background: #0d1727; border: 1px solid #26394e; border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 7, 19, .3); }
+    #singroute-concepts .console .window-bar { background: #091321; color: #8ca6ba; border-bottom: 1px solid #243448; }
+    #singroute-concepts .console .app-shell { display: grid; grid-template-columns: 178px 1fr; min-height: 534px; }
+    #singroute-concepts .console .rail { background: #101e30; border-right: 1px solid #253a50; padding: 23px 17px; display: flex; flex-direction: column; }
+    #singroute-concepts .console .rail-brand { color: #fff; font-size: 19px; font-weight: 740; letter-spacing: -.04em; margin-bottom: 28px; }
+    #singroute-concepts .console .rail-step { color: #95afbf; font-size: 13px; padding: 10px 9px; border-radius: 8px; margin-bottom: 6px; }
+    #singroute-concepts .console .rail-step span { color: #72d9d2; margin-right: 7px; font-weight: 700; }
+    #singroute-concepts .console .rail-step.active { background: #1c3546; color: #f4ffff; }
+    #singroute-concepts .console .rail-bottom { margin-top: auto; font-size: 12px; color: #89a3b6; line-height: 1.8; }
+    #singroute-concepts .console .rail-bottom strong { color: #e5f8f6; font-weight: 600; }
+    #singroute-concepts .console .workspace { padding: 21px 23px; display: grid; gap: 15px; }
+    #singroute-concepts .console .workspace-head { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
+    #singroute-concepts .console .workspace-head h2 { margin: 0; font-size: 25px; letter-spacing: -.04em; }
+    #singroute-concepts .console .workspace-head p { margin: 5px 0 0; color: #8ca6b8; font-size: 12px; }
+    #singroute-concepts .console .pill { background: #153f42; color: var(--sr-accent); }
+    #singroute-concepts .console .source-strip { border: 1px solid #30465b; background: #16283b; border-radius: 10px; padding: 11px 13px; display: flex; align-items: center; gap: 12px; font-size: 13px; }
+    #singroute-concepts .console .source-strip strong { color: #f2fbff; }
+    #singroute-concepts .console .source-strip .muted { margin-left: auto; font-size: 12px; }
+    #singroute-concepts .console .source-strip .mock-button { color: #081d23; background: var(--sr-accent); padding: 7px 10px; }
+    #singroute-concepts .console .compare-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 9px; }
+    #singroute-concepts .console .compare-header strong { font-size: 14px; }
+    #singroute-concepts .console .compare-header span { font-size: 11px; color: #8faabb; }
+    #singroute-concepts .console .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+    #singroute-concepts .console .compare-cell { background: #122238; border: 1px solid #2d4258; border-radius: 10px; padding: 13px; min-height: 188px; }
+    #singroute-concepts .console .compare-cell.after { border-color: #387a77; box-shadow: inset 0 3px 0 var(--sr-accent); }
+    #singroute-concepts .console .compare-label { color: #9fb7c7; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; display: block; margin-bottom: 10px; }
+    #singroute-concepts .console .preview-code { color: #c9dbe9; }
+    #singroute-concepts .console .preview-code .value { color: var(--sr-accent); }
+    #singroute-concepts .console .workspace-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-top: 1px solid #294056; padding-top: 14px; font-size: 12px; color: #93adbd; }
+    #singroute-concepts .console .mock-button.primary { background: var(--sr-accent); color: #08252a; }
+
+    /* 03: Studio — calm split canvas and vertical before/after story. */
+    #singroute-concepts .studio { --sr-accent: #375976; }
+    #singroute-concepts .studio .mock-window { background: #f8f7f2; color: #263d50; border: 1px solid #dcded8; border-radius: 7px; box-shadow: 0 18px 50px rgba(53, 52, 40, .12); }
+    #singroute-concepts .studio .window-bar { background: #f0efe9; color: #6d7d80; border-bottom: 1px solid #dcded8; }
+    #singroute-concepts .studio .studio-head { padding: 21px 26px 16px; border-bottom: 1px solid #d9ddd7; display: flex; justify-content: space-between; align-items: center; gap: 15px; }
+    #singroute-concepts .studio .studio-head h2 { margin: 0; font-size: 27px; font-weight: 650; letter-spacing: -.05em; }
+    #singroute-concepts .studio .studio-head p { margin: 5px 0 0; color: #7b898a; font-size: 12px; }
+    #singroute-concepts .studio .pill { background: #dfece5; color: #2b765d; }
+    #singroute-concepts .studio .studio-body { display: grid; grid-template-columns: 285px 1fr; min-height: 447px; }
+    #singroute-concepts .studio .setup { padding: 22px 21px 20px 26px; border-right: 1px solid #d9ddd7; display: flex; flex-direction: column; gap: 18px; }
+    #singroute-concepts .studio .setup h3 { margin: 0 0 10px; font-size: 15px; font-weight: 700; }
+    #singroute-concepts .studio .setup .field-label { color: #8a999a; display: block; margin-bottom: 6px; }
+    #singroute-concepts .studio .line-field { background: #fff; border: 1px solid #d9dedb; }
+    #singroute-concepts .studio .setup-row { margin-top: 8px; color: #718284; font-size: 12px; }
+    #singroute-concepts .studio .source-file { background: #e8edea; border-left: 3px solid var(--sr-accent); padding: 12px; font-size: 13px; }
+    #singroute-concepts .studio .source-file strong { display: block; margin-bottom: 5px; }
+    #singroute-concepts .studio .source-file span { color: #708183; font-size: 11px; }
+    #singroute-concepts .studio .setup-foot { margin-top: auto; color: #7f8f90; font-size: 12px; }
+    #singroute-concepts .studio .story { padding: 22px 25px 20px; display: flex; flex-direction: column; }
+    #singroute-concepts .studio .story h3 { margin: 0 0 12px; font-size: 15px; font-weight: 700; }
+    #singroute-concepts .studio .story-cell { border: 1px solid #d7deda; background: #fff; padding: 12px 15px; border-radius: 7px; }
+    #singroute-concepts .studio .story-cell.after { border-color: #92b1ad; background: #f1f7f3; }
+    #singroute-concepts .studio .story-label { font-size: 11px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; color: #738687; margin-bottom: 5px; }
+    #singroute-concepts .studio .story-arrow { color: var(--sr-accent); font-size: 19px; text-align: center; line-height: 24px; }
+    #singroute-concepts .studio .preview-code { line-height: 1.6; }
+    #singroute-concepts .studio .preview-code .value { color: var(--sr-accent); }
+    #singroute-concepts .studio .story-foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 13px; font-size: 12px; color: #728384; }
+    #singroute-concepts .studio .mock-button.primary { color: #fff; background: var(--sr-accent); }
+
+    @media (max-width: 680px) {
+      #singroute-concepts .concept { min-height: 960px; }
+      #singroute-concepts .mini-preview { display: none; }
+      #singroute-concepts .mock-window { min-height: 0; }
+      #singroute-concepts .route .app-body, #singroute-concepts .console .workspace { padding: 17px; }
+      #singroute-concepts .route .top-grid, #singroute-concepts .route .compare-grid, #singroute-concepts .console .compare-grid { grid-template-columns: 1fr; }
+      #singroute-concepts .console .app-shell { grid-template-columns: 1fr; }
+      #singroute-concepts .console .rail { display: none; }
+      #singroute-concepts .studio .studio-body { grid-template-columns: 1fr; }
+      #singroute-concepts .studio .setup { border-right: 0; border-bottom: 1px solid #d9ddd7; }
+      #singroute-concepts .studio .story { min-height: 360px; }
+      #singroute-concepts .route .app-head, #singroute-concepts .console .workspace-head, #singroute-concepts .studio .studio-head { flex-wrap: wrap; }
+      #singroute-concepts .route .action-bar, #singroute-concepts .console .workspace-foot, #singroute-concepts .studio .story-foot { flex-wrap: wrap; }
+    }
+  </style>
+
+  <div class="viz-carousel" aria-label="Три направления дизайна SingRoute" data-previous-label="Назад" data-next-label="Далее">
+    <section class="concept route" data-variant="01 Маршрут" aria-label="Маршрут — светлый интерфейс и логотип с маршрутом">
+      <div class="identity">
+        <svg viewBox="0 0 96 96" role="img" aria-label="Маршрут с двумя точками на тёмно-синем фоне"><rect width="96" height="96" rx="22" fill="#142C49"/><path d="M25 70h30c10 0 16-6 16-15s-6-14-16-14H42c-10 0-16-6-16-15" fill="none" stroke="#F8FCFF" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><circle cx="25" cy="70" r="8" fill="#49D5D0"/><circle cx="26" cy="26" r="8" fill="#49D5D0"/></svg>
+        <div><div class="number">01 · Маршрут</div><div class="wordmark">SingRoute</div><div class="tagline">Спокойный рабочий сценарий · синий, бирюзовый, белый</div></div>
+        <div class="mini-preview"><svg viewBox="0 0 96 96" aria-hidden="true"><rect width="96" height="96" rx="22" fill="#142C49"/><path d="M25 70h30c10 0 16-6 16-15s-6-14-16-14H42c-10 0-16-6-16-15" fill="none" stroke="#F8FCFF" stroke-width="10" stroke-linecap="round"/><circle cx="25" cy="70" r="8" fill="#49D5D0"/><circle cx="26" cy="26" r="8" fill="#49D5D0"/></svg> значок в панели задач</div>
+      </div>
+      <div class="mock-window">
+        <div class="window-bar"><span>SingRoute</span><span class="window-controls">— □ ×</span></div>
+        <div class="app-body">
+          <div class="app-head"><div><h2>Обновление сервера</h2><p>Подключите роутер, загрузите конфиг и проверьте замену.</p></div><span class="pill">Роутер подключён</span></div>
+          <div class="top-grid">
+            <div class="panel"><div class="panel-head"><div><span class="step">1</span><span class="panel-title">Подключение</span></div><span class="muted">⚙</span></div><div class="form-mini"><div><span class="field-label">Адрес роутера</span><div class="line-field">192.168.1.1</div></div><div><span class="field-label">Пользователь</span><div class="line-field">root</div></div></div><div class="panel-foot"><span>SSH · порт 22</span><button class="mock-button secondary" type="button">Переподключить</button></div></div>
+            <div class="panel"><div class="panel-head"><div><span class="step">2</span><span class="panel-title">Источник сервера</span></div><span class="muted">JSON</span></div><span class="field-label">Загруженный конфиг</span><div class="line-field">server-export.json</div><div class="panel-foot"><span>1 сервер найден</span><button class="mock-button secondary" type="button">Заменить файл</button></div></div>
+          </div>
+          <div class="panel compare-panel"><div class="panel-head"><div><span class="step">3</span><span class="panel-title">Проверьте замену</span></div><span class="muted">Меняется только активный outbound</span></div><div class="compare-grid"><div class="compare-cell"><span class="compare-label">Сейчас на роутере</span><div class="preview-code"><span class="dim">tag</span> → proxy<br><span class="dim">type</span> → vless<br><span class="dim">server</span> → old.example.net</div></div><div class="compare-cell"><span class="compare-label">После обновления</span><div class="preview-code"><span class="dim">tag</span> → proxy<br><span class="dim">type</span> → vless<br><span class="dim">server</span> → <span class="value">edge.example.net</span></div></div></div></div>
+          <div class="action-bar"><span class="action-note">Перед записью конфиг будет проверен. При ошибке прежний вернётся.</span><button class="mock-button primary" type="button">Обновить роутер</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="concept console" data-variant="02 Пульт" aria-label="Пульт — тёмный интерфейс и логотип с направлением" hidden>
+      <div class="identity">
+        <svg viewBox="0 0 96 96" role="img" aria-label="Два направленных маршрута на тёмном фоне"><rect width="96" height="96" rx="21" fill="#0B1726"/><path d="M22 30h43l11 11-11 11H47" fill="none" stroke="#62D8D0" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/><path d="M74 66H31L20 55l11-11h17" fill="none" stroke="#F2F8FC" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div><div class="number">02 · Пульт</div><div class="wordmark">SingRoute</div><div class="tagline">Технический контроль · графит, бирюзовый, плотная компоновка</div></div>
+        <div class="mini-preview"><svg viewBox="0 0 96 96" aria-hidden="true"><rect width="96" height="96" rx="21" fill="#0B1726"/><path d="M22 30h43l11 11-11 11H47" fill="none" stroke="#62D8D0" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/><path d="M74 66H31L20 55l11-11h17" fill="none" stroke="#F2F8FC" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/></svg> значок в панели задач</div>
+      </div>
+      <div class="mock-window">
+        <div class="window-bar"><span>SingRoute / рабочая область</span><span class="window-controls">— □ ×</span></div>
+        <div class="app-shell"><div class="rail"><div class="rail-brand">SingRoute</div><div class="rail-step"><span>01</span> Роутер</div><div class="rail-step"><span>02</span> Источник</div><div class="rail-step active"><span>03</span> Проверка</div><div class="rail-bottom">OpenWrt<br><strong>192.168.1.1</strong><br>sing-box работает</div></div>
+          <div class="workspace"><div class="workspace-head"><div><h2>Замена outbound</h2><p>Текущий сервер → выбранный сервер</p></div><span class="pill">SSH подключён</span></div>
+            <div class="source-strip"><span class="muted">ИСТОЧНИК</span><strong>server-export.json</strong><span class="muted">1 сервер · VLESS Reality</span><button class="mock-button" type="button">Изменить</button></div>
+            <div><div class="compare-header"><strong>Сравнение конфигурации</strong><span>остальные outbound сохраняются</span></div><div class="compare-grid"><div class="compare-cell"><span class="compare-label">Текущий outbound</span><div class="preview-code"><span class="dim">tag</span>       proxy<br><span class="dim">protocol</span>  vless<br><span class="dim">server</span>    old.example.net<br><span class="dim">port</span>      443<br><span class="dim">tls</span>       reality</div></div><div class="compare-cell after"><span class="compare-label">Новый outbound</span><div class="preview-code"><span class="dim">tag</span>       proxy<br><span class="dim">protocol</span>  vless<br><span class="dim">server</span>    <span class="value">edge.example.net</span><br><span class="dim">port</span>      443<br><span class="dim">tls</span>       reality</div></div></div></div>
+            <div class="workspace-foot"><span>Проверка sing-box и откат выполняются автоматически</span><button class="mock-button primary" type="button">Применить замену →</button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="concept studio" data-variant="03 Обзор" aria-label="Обзор — спокойный интерфейс с вертикальным сравнением и логотипом шлюза" hidden>
+      <div class="identity">
+        <svg viewBox="0 0 96 96" role="img" aria-label="Три точки маршрута под аркой"><rect width="96" height="96" rx="18" fill="#E8ECE5"/><path d="M22 65V44c0-16 11-27 26-27s26 11 26 27v21" fill="none" stroke="#375976" stroke-width="8" stroke-linecap="round"/><path d="M29 64h38" fill="none" stroke="#375976" stroke-width="8" stroke-linecap="round"/><circle cx="29" cy="64" r="7" fill="#B8895C"/><circle cx="48" cy="64" r="7" fill="#375976"/><circle cx="67" cy="64" r="7" fill="#B8895C"/></svg>
+        <div><div class="number">03 · Обзор</div><div class="wordmark">SingRoute</div><div class="tagline">Тихий инструмент · тёплый светлый фон, сланцевый синий</div></div>
+        <div class="mini-preview"><svg viewBox="0 0 96 96" aria-hidden="true"><rect width="96" height="96" rx="18" fill="#E8ECE5"/><path d="M22 65V44c0-16 11-27 26-27s26 11 26 27v21" fill="none" stroke="#375976" stroke-width="8" stroke-linecap="round"/><path d="M29 64h38" fill="none" stroke="#375976" stroke-width="8" stroke-linecap="round"/><circle cx="29" cy="64" r="7" fill="#B8895C"/><circle cx="48" cy="64" r="7" fill="#375976"/><circle cx="67" cy="64" r="7" fill="#B8895C"/></svg> значок в панели задач</div>
+      </div>
+      <div class="mock-window">
+        <div class="window-bar"><span>SingRoute</span><span class="window-controls">— □ ×</span></div>
+        <div class="studio-head"><div><h2>Проверка перед заменой</h2><p>Понятно, что изменится на роутере.</p></div><span class="pill">Подключено</span></div>
+        <div class="studio-body"><div class="setup"><div><h3>Роутер</h3><span class="field-label">Адрес</span><div class="line-field">192.168.1.1</div><div class="setup-row">root · SSH 22 · OpenWrt</div></div><div><h3>Источник</h3><div class="source-file"><strong>server-export.json</strong><span>VLESS Reality · 1 сервер</span></div><div class="setup-row">Поменять файл →</div></div><div class="setup-foot">Дополнительные настройки ⚙</div></div>
+          <div class="story"><h3>Активный сервер</h3><div class="story-cell"><div class="story-label">Сейчас</div><div class="preview-code">proxy · vless · old.example.net · 443</div></div><div class="story-arrow">↓</div><div class="story-cell after"><div class="story-label">После обновления</div><div class="preview-code">proxy · vless · <span class="value">edge.example.net</span> · 443</div></div><div class="story-foot"><span>Проверка и восстановление при ошибке</span><button class="mock-button primary" type="button">Обновить роутер</button></div></div>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+    for (const [selector, initial] of [[".route", "#176f71"], [".console", "#62d8d0"], [".studio", "#375976"]]) {
+      const root = document.querySelector(`#singroute-concepts ${selector}`);
+      const state = { accent: initial };
+      const render = () => root.style.setProperty("--sr-accent", state.accent);
+      render();
+      if (globalThis.Tweak) {
+        const tweak = new Tweak({ container: root, onChange: render });
+        tweak.addColorPicker(state, "accent", { label: `Акцент ${root.dataset.variant}`, reference: "--sr-accent" });
+      }
+    }
+  </script>
+</div>

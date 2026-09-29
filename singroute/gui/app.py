@@ -19,6 +19,7 @@ from singroute.application.app_update import (
     signal_update_health,
     take_update_error,
 )
+from singroute.gui.brand import APP_STYLESHEET, brand_icon
 from singroute.gui.main_window import MainWindow
 
 INSTANCE_LOCK_FILENAME = ".SingRoute.instance.lock"
@@ -119,11 +120,17 @@ def _show_retained_update_backup(window: MainWindow) -> None:
 
 
 def run_gui() -> int:
+    if sys.platform == "win32":
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "SingRoute.Desktop"
+        )
     app = QApplication(sys.argv)
     app.setApplicationName("SingRoute")
     app.setApplicationVersion(__version__)
     app.setOrganizationName("SingRoute")
     app.setStyle("Fusion")
+    app.setWindowIcon(brand_icon())
+    app.setStyleSheet(APP_STYLESHEET)
     directory = _application_directory()
     instance_lock = _acquire_instance_lock(directory)
     if instance_lock is None:

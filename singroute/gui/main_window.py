@@ -15,8 +15,8 @@ from PySide6.QtCore import (
     QEvent,
     QMimeData,
     QObject,
-    QPointF,
     QSignalBlocker,
+    QSize,
     Qt,
     QThreadPool,
     QTimer,
@@ -25,18 +25,12 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QCloseEvent,
-    QColor,
     QDragEnterEvent,
     QDragLeaveEvent,
     QDragMoveEvent,
     QDropEvent,
-    QIcon,
     QKeyEvent,
     QKeySequence,
-    QPainter,
-    QPainterPath,
-    QPen,
-    QPixmap,
     QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -92,6 +86,8 @@ from singroute.core.errors import (
     UnsupportedVlessTransportError,
 )
 from singroute.gui.advanced_settings import AdvancedSettingsDialog
+from singroute.gui.brand import brand_icon
+from singroute.gui.icons import settings_icon, visibility_icon
 from singroute.gui.worker import Worker
 from singroute.infrastructure.credentials import (
     CredentialStore,
@@ -163,6 +159,7 @@ class MainWindow(QMainWindow):
         self._busy_close_message: str | None = None
 
         self.setWindowTitle("SingRoute")
+        self.setWindowIcon(brand_icon())
         self.setAcceptDrops(True)
         self.resize(self.settings.window_width, self.settings.window_height)
         self.setMinimumSize(780, 620)
@@ -184,21 +181,27 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         central.setAcceptDrops(True)
         root = QVBoxLayout(central)
-        root.setContentsMargins(18, 14, 18, 14)
+        root.setContentsMargins(22, 13, 22, 13)
         root.setSpacing(10)
 
         header = QHBoxLayout()
+        brand_label = QLabel()
+        brand_label.setPixmap(brand_icon().pixmap(46, 46))
+        header.addWidget(brand_label)
+        header.addSpacing(9)
         header_text = QVBoxLayout()
         title = QLabel("SingRoute")
         title.setObjectName("title")
-        subtitle = QLabel("Безопасная синхронизация outbound sing-box на OpenWrt")
+        subtitle = QLabel("Безопасное обновление прокси на роутере")
         subtitle.setObjectName("subtitle")
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
         self.advanced_button = QToolButton()
-        self.advanced_button.setText("⚙")
+        self.advanced_button.setIcon(settings_icon())
+        self.advanced_button.setIconSize(QSize(18, 18))
         self.advanced_button.setToolTip("Дополнительные настройки")
-        self.advanced_button.setObjectName("gearButton")
+        self.advanced_button.setAccessibleName("Дополнительные настройки")
+        self.advanced_button.setObjectName("settingsButton")
         self.advanced_button.setFixedSize(28, 28)
         self.advanced_button.clicked.connect(self._open_advanced_settings)
         header.addLayout(header_text, 1)
@@ -213,15 +216,15 @@ class MainWindow(QMainWindow):
         header.addWidget(self.app_update_button)
         root.addLayout(header)
 
-        self.source_group = QGroupBox("2. Исходный конфиг HAPP / NekoBox")
+        self.source_group = QGroupBox("2. Источник сервера")
         source_layout = QVBoxLayout(self.source_group)
         self.source_editor = QPlainTextEdit()
         self.source_editor.setReadOnly(True)
         self.source_editor.setPlaceholderText(
             "Вставьте конфиг, откройте или перетащите файл"
         )
-        self.source_editor.setMinimumHeight(90)
-        self.source_editor.setMaximumHeight(145)
+        self.source_editor.setMinimumHeight(72)
+        self.source_editor.setMaximumHeight(82)
         source_layout.addWidget(self.source_editor)
         source_actions = QHBoxLayout()
         self.source_name_label = QLabel("Текст ещё не добавлен")
@@ -249,7 +252,7 @@ class MainWindow(QMainWindow):
         self.password_edit.setClearButtonEnabled(True)
         self.password_edit.setMinimumWidth(135)
         self.password_visibility_action = self.password_edit.addAction(
-            _password_visibility_icon(False),
+            visibility_icon(False),
             QLineEdit.ActionPosition.TrailingPosition,
         )
         self.password_visibility_action.setObjectName("passwordVisibilityAction")
@@ -337,30 +340,12 @@ class MainWindow(QMainWindow):
         self.drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.drop_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.drop_hint.setStyleSheet(
-            "background-color: rgba(15, 23, 42, 190); color: white; "
-            "border: 2px dashed #93c5fd; border-radius: 8px; "
+            "background-color: rgba(20, 44, 73, 218); color: white; "
+            "border: 2px dashed #49d5d0; border-radius: 14px; "
             "font-size: 20px; font-weight: 600;"
         )
         self.drop_hint.setGeometry(central.rect())
         self.drop_hint.hide()
-        self.setStyleSheet(
-            """
-            QLabel#title { font-size: 22px; font-weight: 650; }
-            QLabel#subtitle, QLabel#mutedLabel { color: #667085; }
-            QLabel#connectedLabel { color: #15803d; font-weight: 600; }
-            QLabel#disconnectedLabel { color: #b42318; font-weight: 600; }
-            QGroupBox { font-weight: 600; padding-top: 11px; }
-            QGroupBox > * { font-weight: 400; }
-            QPushButton { padding: 6px 12px; }
-            QToolButton#gearButton { font-size: 16px; padding: 0; }
-            QPushButton#primaryButton { background: #2563eb; color: white; border-radius: 4px; }
-            QPushButton#primaryButton:disabled { background: #94a3b8; }
-            QPushButton#applyButton { background: #15803d; color: white; border-radius: 4px; font-weight: 600; }
-            QPushButton#applyButton:disabled { background: #94a3b8; }
-            QLineEdit { padding: 5px; }
-            QPlainTextEdit { font-family: Consolas, monospace; }
-            """
-        )
 
     def _build_shortcuts(self) -> None:
         self.paste_shortcut = QShortcut(
@@ -549,20 +534,25 @@ class MainWindow(QMainWindow):
             else:
                 message = "JSON слишком глубоко вложен."
         elif isinstance(error, UnsupportedVlessTransportError):
-            transport_name = {
-                "ws": "WebSocket",
-                "http": "HTTP",
-                "httpupgrade": "HTTP Upgrade",
-                "quic": "QUIC",
-                "xhttp": "XHTTP",
-            }.get(error.network)
-            if transport_name is None:
-                message = "SingRoute пока не импортирует VLESS с этим транспортом."
-            else:
+            if error.network == "xhttp":
                 message = (
-                    "SingRoute пока не импортирует VLESS с транспортом "
-                    f"{transport_name}."
+                    "sing-box на роутере не поддерживает XHTTP. "
+                    "Выберите у провайдера профиль VLESS Reality через TCP или gRPC."
                 )
+            else:
+                transport_name = {
+                    "ws": "WebSocket",
+                    "http": "HTTP",
+                    "httpupgrade": "HTTP Upgrade",
+                    "quic": "QUIC",
+                }.get(error.network)
+                if transport_name is None:
+                    message = "SingRoute пока не импортирует VLESS с этим транспортом."
+                else:
+                    message = (
+                        "SingRoute пока не импортирует VLESS с транспортом "
+                        f"{transport_name}."
+                    )
         elif isinstance(error, UnsupportedGrpcSettingError):
             if error.field == "multiMode":
                 message = (
@@ -776,7 +766,7 @@ class MainWindow(QMainWindow):
             QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
         )
         label = "Скрыть пароль" if visible else "Показать пароль"
-        self.password_visibility_action.setIcon(_password_visibility_icon(visible))
+        self.password_visibility_action.setIcon(visibility_icon(visible))
         self.password_visibility_action.setText(label)
         self.password_visibility_action.setToolTip(label)
 
@@ -1485,29 +1475,6 @@ def _ask_yes_no(
     if no_button is not None:
         no_button.setText("Нет")
     return QMessageBox.StandardButton(dialog.exec())
-
-
-def _password_visibility_icon(password_visible: bool) -> QIcon:
-    pixmap = QPixmap(18, 18)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor("#475467"))
-    pen.setWidthF(1.6)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-
-    eye = QPainterPath()
-    eye.moveTo(2.0, 9.0)
-    eye.cubicTo(4.8, 4.2, 13.2, 4.2, 16.0, 9.0)
-    eye.cubicTo(13.2, 13.8, 4.8, 13.8, 2.0, 9.0)
-    painter.drawPath(eye)
-    painter.drawEllipse(QPointF(9.0, 9.0), 2.2, 2.2)
-    if password_visible:
-        painter.drawLine(QPointF(3.0, 3.0), QPointF(15.0, 15.0))
-    painter.end()
-    return QIcon(pixmap)
 
 
 def _result_details(result: RouterUpdateResult) -> str:

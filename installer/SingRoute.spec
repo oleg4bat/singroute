@@ -17,6 +17,18 @@ a = Analysis(
             str(project_root / "singroute" / "application" / "update.ps1"),
             "singroute/application",
         ),
+        (
+            str(project_root / "singroute" / "assets" / "singroute.png"),
+            "singroute/assets",
+        ),
+        (
+            str(project_root / "singroute" / "assets" / "chevron-up.png"),
+            "singroute/assets",
+        ),
+        (
+            str(project_root / "singroute" / "assets" / "chevron-down.png"),
+            "singroute/assets",
+        ),
         *copy_metadata("singroute"),
     ],
     hiddenimports=["keyring.backends.Windows"],
@@ -51,6 +63,7 @@ exe = EXE(
     a.datas,
     [],
     name="SingRoute",
+    icon=str(project_root / "singroute" / "assets" / "singroute.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
