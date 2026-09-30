@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from threading import Thread
 
 from PySide6.QtCore import QLockFile, Qt, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -21,6 +22,7 @@ from singroute.application.app_update import (
 )
 from singroute.gui.brand import APP_STYLESHEET, brand_icon
 from singroute.gui.main_window import MainWindow
+from singroute.infrastructure.windows_shell import notify_executable_changed
 
 INSTANCE_LOCK_FILENAME = ".SingRoute.instance.lock"
 ACTIVATION_TIMEOUT_SECONDS = 3
@@ -143,6 +145,14 @@ def run_gui() -> int:
         return 0
 
     try:
+        if sys.platform == "win32" and getattr(sys, "frozen", False):
+            # Also repair stale icons after updates installed by older helpers
+            # or by copying the EXE manually. Keep shell work off the Qt thread.
+            Thread(
+                target=notify_executable_changed,
+                args=(Path(sys.executable),),
+                daemon=True,
+            ).start()
         window = MainWindow()
         try:
             server = _start_activation_server(window, directory)

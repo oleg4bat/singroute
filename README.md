@@ -86,6 +86,9 @@ The verified file is staged next to `SingRoute.exe`. A background Windows helper
 then closes SingRoute, waits for all PyInstaller file locks to disappear,
 replaces the executable with rollback protection, and starts SingRoute again.
 Version 0.3.3 adds this complete automatic replacement and restart flow.
+SingRoute refreshes the EXE icon in Explorer after replacement and rollback.
+The portable application also requests a refresh at startup, covering updates
+installed by older helpers and manual EXE replacement.
 Version 0.3.5 fixes helper startup from the frozen application and requires a
 readiness signal before SingRoute closes, preventing silent failed updates.
 Version 0.4.0 keeps the previous executable until the updated GUI reports

@@ -206,10 +206,29 @@ class FakeCredentialStore:
         self.passwords.pop(target, None)
 
 
+@pytest.mark.parametrize("frozen", [False, True])
 def test_gui_entry_point_configures_and_shows_main_window(
     monkeypatch: pytest.MonkeyPatch,
+    frozen: bool,
 ):
     calls: list[tuple[str, object]] = []
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            assert daemon is True
+            self.target = target
+            self.args = args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(gui_app_module.sys, "frozen", frozen, raising=False)
+    monkeypatch.setattr(gui_app_module, "Thread", FakeThread)
+    monkeypatch.setattr(
+        gui_app_module,
+        "notify_executable_changed",
+        lambda path: calls.append(("shell_refresh", path)),
+    )
 
     class FakeApplication:
         def __init__(self, arguments: list[str]) -> None:
@@ -268,6 +287,9 @@ def test_gui_entry_point_configures_and_shows_main_window(
     assert ("window", "shown") in calls
     assert ("server", "closed") in calls
     assert ("lock", "released") in calls
+    assert (("shell_refresh", Path(gui_app_module.sys.executable)) in calls) == (
+        frozen and gui_app_module.sys.platform == "win32"
+    )
 
 
 def test_gui_warns_when_previous_executable_could_not_be_removed(

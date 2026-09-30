@@ -80,6 +80,26 @@ function Write-FailureFile {
     catch {}
 }
 
+function Update-ExecutableShellIcon {
+    try {
+        if (-not ("SingRoute.Update.ShellNotification" -as [type])) {
+            Add-Type -Name "ShellNotification" -Namespace "SingRoute.Update" `
+                -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern void SHChangeNotify(int eventId, uint flags, string path, System.IntPtr unused);
+"@ -ErrorAction Stop
+        }
+        # SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT. Refresh only this EXE.
+        [SingRoute.Update.ShellNotification]::SHChangeNotify(
+            0x2000, 0x2005, $TargetPath, [System.IntPtr]::Zero
+        )
+    }
+    catch {
+        # A cosmetic shell refresh must never turn a safe replacement into a
+        # rollback, or prevent restoration of the previous executable.
+    }
+}
+
 $originalProcessExited = $false
 $backupCreated = $false
 $newVersionInstalled = $false
@@ -122,6 +142,7 @@ try {
 
     Move-Item -LiteralPath $StagedPath -Destination $TargetPath -ErrorAction Stop
     $newVersionInstalled = $true
+    Update-ExecutableShellIcon
 
     Remove-Item -Force -LiteralPath $HealthPath -ErrorAction SilentlyContinue
     $env:SINGROUTE_UPDATE_HEALTH_PATH = $HealthPath
@@ -228,6 +249,7 @@ catch {
                 -Deadline $rollbackDeadline
             $backupCreated = $false
             $previousVersionReady = $true
+            Update-ExecutableShellIcon
         }
         elseif (
             $originalProcessExited `

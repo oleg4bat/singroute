@@ -22,4 +22,10 @@ if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
     throw "PyInstaller did not create $outputPath"
 }
 
+poetry run python scripts\check_executable_icon.py `
+    $outputPath (Join-Path $PSScriptRoot "singroute\assets\singroute.ico")
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged EXE icon verification failed"
+}
+
 Write-Host "Portable application: dist\SingRoute.exe"

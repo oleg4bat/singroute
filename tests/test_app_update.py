@@ -387,7 +387,10 @@ def test_launch_staged_update_stops_unresponsive_helper(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows updater integration")
-def test_installer_retries_until_locked_target_can_be_replaced(tmp_path: Path):
+def test_installer_retries_until_locked_target_can_be_replaced(
+    tmp_path: Path,
+    shell_change_events,
+):
     powershell = _powershell_executable()
     staged = tmp_path / ".SingRoute.update-v0.3.3.cmd"
     target = tmp_path / "SingRoute.cmd"
@@ -497,6 +500,7 @@ finally {
     assert ready_path.exists() is False
     assert health_path.exists() is False
     assert hashlib.sha256(target.read_bytes()).hexdigest() == expected_digest
+    assert any(path in (target, tmp_path) for path in shell_change_events())
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows updater integration")
@@ -639,7 +643,10 @@ def test_installer_refuses_update_while_another_target_instance_is_running(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows updater integration")
-def test_installer_restores_backup_when_failed_target_disappears(tmp_path: Path):
+def test_installer_restores_backup_when_failed_target_disappears(
+    tmp_path: Path,
+    shell_change_events,
+):
     powershell = _powershell_executable()
     target = tmp_path / "SingRoute.cmd"
     staged = tmp_path / ".SingRoute.update-v0.4.0.cmd"
@@ -715,6 +722,7 @@ def test_installer_restores_backup_when_failed_target_disappears(tmp_path: Path)
     assert previous_exited_path.read_text(encoding="ascii") == "done"
     error = error_path.read_text(encoding="utf-8")
     assert "disappeared before rollback" in error
+    assert any(path in (target, tmp_path) for path in shell_change_events())
 
 
 def _release_info(version: str, digest: str) -> ReleaseInfo:

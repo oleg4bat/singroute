@@ -165,7 +165,9 @@ try {
 import sys
 from pathlib import Path
 from PyInstaller.archive.readers import CArchiveReader
+from scripts.check_executable_icon import check_executable_icon
 
+check_executable_icon(Path(sys.argv[1]), Path("singroute/assets/singroute.ico"))
 resource_name = r"singroute\application\update.ps1"
 embedded = CArchiveReader(sys.argv[1]).extract(resource_name)
 expected = Path(sys.argv[2]).read_bytes()
@@ -324,6 +326,13 @@ finally {
         }
     }
     $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)
+    $expectedParent = [System.IO.Path]::GetFullPath(
+        [System.IO.Path]::GetTempPath()
+    ).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    if ([System.IO.Path]::GetDirectoryName($resolvedTestRoot) -ine $expectedParent) {
+        throw "Unexpected E2E cleanup directory: $resolvedTestRoot"
+    }
     while (Test-Path -LiteralPath $testRoot) {
         try {
             Remove-Item -Recurse -Force -LiteralPath $testRoot
