@@ -718,6 +718,110 @@ def test_ctrl_v_loads_config_but_keeps_normal_line_edit_paste(tmp_path: Path):
     app.processEvents()
 
 
+@pytest.fixture
+def clipboard_import_window(tmp_path: Path):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"),
+        FakeCredentialStore(),
+    )
+    try:
+        yield window
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
+@pytest.mark.parametrize("url_kind", ["remote", "local", "multiple"])
+@pytest.mark.parametrize("paste_action", ["button", "shortcut"])
+def test_paste_imports_json_text_even_when_clipboard_also_has_urls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clipboard_import_window: MainWindow,
+    url_kind: str,
+    paste_action: str,
+):
+    app = QApplication.instance() or QApplication([])
+    window = clipboard_import_window
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    source = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "source_happ_vless_reality_2.json"
+        ).read_text(encoding="utf-8")
+    )
+    stream = source["outbounds"][0]["streamSettings"]
+    stream["tcpSettings"] = {}
+    stream["realitySettings"].pop("allowInsecure")
+    stream["realitySettings"]["fingerprint"] = "firefox"
+    config_text = "\ufeff \n" + json.dumps(source, ensure_ascii=False)
+    other_path = tmp_path / "other.json"
+    other_path.write_text('{"outbounds": [{"type": "trojan"}]}', encoding="utf-8")
+    urls = {
+        "remote": [QUrl("https://example.test/config")],
+        "local": [QUrl.fromLocalFile(str(other_path))],
+        "multiple": [
+            QUrl.fromLocalFile(str(other_path)),
+            QUrl.fromLocalFile(str(tmp_path / "second.json")),
+        ],
+    }
+    mime_data = QMimeData()
+    mime_data.setUrls(urls[url_kind])
+    mime_data.setText(config_text)
+    QApplication.clipboard().setMimeData(mime_data)
+    window.show()
+    window.source_editor.setFocus()
+    app.processEvents()
+
+    if paste_action == "button":
+        window.paste_button.click()
+    else:
+        QTest.keyClick(
+            window.source_editor, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier
+        )
+    app.processEvents()
+
+    assert warnings == []
+    assert window.source_editor.toPlainText() == config_text.lstrip("\ufeff")
+    assert window.source_name_label.text() == "Конфиг вставлен из буфера"
+    assert window.settings.last_import_directory == ""
+
+
+def test_paste_rejects_invalid_json_text_instead_of_loading_clipboard_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clipboard_import_window: MainWindow,
+):
+    window = clipboard_import_window
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    existing_text = '{"outbounds": [{"type": "vless"}]}'
+    window._set_source_content(existing_text, "Предыдущий конфиг")
+    other_path = tmp_path / "other.json"
+    other_path.write_text('{"outbounds": [{"type": "trojan"}]}', encoding="utf-8")
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(other_path))])
+    mime_data.setText('{"outbounds": [')
+    QApplication.clipboard().setMimeData(mime_data)
+
+    window.paste_button.click()
+
+    assert window.source_editor.toPlainText() == existing_text
+    assert window.source_name_label.text() == "Предыдущий конфиг"
+    assert window.settings.last_import_directory == ""
+    assert len(warnings) == 1
+    assert "некорректный JSON" in warnings[0]
+
+
 def test_paste_rejects_incomplete_json_with_location(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

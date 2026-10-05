@@ -476,6 +476,12 @@ class MainWindow(QMainWindow):
         if self._busy:
             return
         mime_data = QApplication.clipboard().mimeData()
+        text = mime_data.text().lstrip("\ufeff") if mime_data.hasText() else ""
+        # A clipboard item can advertise both config text and URLs. Prefer
+        # JSON-looking text; file copies normally expose a path as their text.
+        if text.lstrip().startswith(("{", "[")):
+            self._import_source_text(text, "Конфиг вставлен из буфера", from_file=False)
+            return
         if mime_data.hasUrls():
             urls = mime_data.urls()
             if len(urls) != 1 or not urls[0].isLocalFile():
@@ -491,7 +497,6 @@ class MainWindow(QMainWindow):
         if not mime_data.hasText():
             self._unsupported_source_format()
             return
-        text = mime_data.text().lstrip("\ufeff")
         if not text.strip():
             self._unsupported_source_format()
             return

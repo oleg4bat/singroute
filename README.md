@@ -14,7 +14,8 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 1. Connects to OpenWrt over SSH and keeps the session for subsequent actions.
 2. Imports JSON from the clipboard or a HAPP/NekoBox configuration file.
    Ctrl+V accepts config text or one copied file and rejects unsupported formats
-   before loading. Normal text paste still works in connection fields. One local
+   before loading. JSON text takes priority when the clipboard also contains
+   links. Normal text paste still works in connection fields. One local
    file can also be dropped anywhere in the main window.
 3. Converts a supported proxy outbound to the sing-box format.
 4. Shows the current and proposed outbound while masking passwords, UUIDs, and
@@ -61,6 +62,7 @@ the preview, and lets you confirm a changed router SSH host key after checking
 its fingerprint on the router.
 Version 0.6.1 imports HAPP/Xray Reality gRPC profiles with `multiMode: true`
 when a regular service name can use the server's standard `Tun` method.
+Version 0.7.2 fixes JSON paste when the clipboard also advertises links.
 
 Python and an installer are not required. After settings are saved, SingRoute
 creates this file next to the executable:
