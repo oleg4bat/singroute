@@ -30,6 +30,7 @@ def test_missing_ini_returns_openwrt_defaults(tmp_path: Path):
     assert settings.remember_password is False
     assert settings.auto_connect is False
     assert settings.check_updates_on_startup is True
+    assert settings.offer_ruantiblock_start is True
 
 
 def test_settings_round_trip_to_portable_ini_without_password(tmp_path: Path):
@@ -46,6 +47,7 @@ def test_settings_round_trip_to_portable_ini_without_password(tmp_path: Path):
         remember_password=True,
         auto_connect=True,
         check_updates_on_startup=False,
+        offer_ruantiblock_start=False,
         last_import_directory="D:/configs",
         window_width=1100,
         window_height=800,

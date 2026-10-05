@@ -58,6 +58,10 @@ class AdvancedSettingsDialog(QDialog):
             "Проверять обновления SingRoute при запуске"
         )
         self.check_updates_on_startup.setChecked(settings.check_updates_on_startup)
+        self.offer_ruantiblock_start = QCheckBox(
+            "Предлагать включить ruantiblock после замены сервера"
+        )
+        self.offer_ruantiblock_start.setChecked(settings.offer_ruantiblock_start)
 
         form = QFormLayout()
         form.addRow("SSH-порт", self.port_spin)
@@ -66,6 +70,7 @@ class AdvancedSettingsDialog(QDialog):
         form.addRow("Конфиг на роутере", self.config_path_edit)
         form.addRow("Служба OpenWrt", self.service_name_edit)
         form.addRow("Обновления", self.check_updates_on_startup)
+        form.addRow("ruantiblock", self.offer_ruantiblock_start)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -87,6 +92,7 @@ class AdvancedSettingsDialog(QDialog):
         settings.config_path = self.config_path_edit.text().strip()
         settings.service_name = self.service_name_edit.text().strip()
         settings.check_updates_on_startup = self.check_updates_on_startup.isChecked()
+        settings.offer_ruantiblock_start = self.offer_ruantiblock_start.isChecked()
 
     def _browse_identity(self) -> None:
         start = self.identity_edit.text().strip() or str(Path.home() / ".ssh")

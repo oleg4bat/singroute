@@ -346,6 +346,7 @@ def test_advanced_settings_dialog_applies_all_fields(tmp_path: Path):
     dialog.config_path_edit.setText("  /new/config.json  ")
     dialog.service_name_edit.setText("  sing-box-new  ")
     dialog.check_updates_on_startup.setChecked(False)
+    dialog.offer_ruantiblock_start.setChecked(False)
     dialog.apply_to(settings)
 
     assert settings.port == 2200
@@ -354,6 +355,7 @@ def test_advanced_settings_dialog_applies_all_fields(tmp_path: Path):
     assert settings.config_path == "/new/config.json"
     assert settings.service_name == "sing-box-new"
     assert settings.check_updates_on_startup is False
+    assert settings.offer_ruantiblock_start is False
     dialog.deleteLater()
     app.processEvents()
 

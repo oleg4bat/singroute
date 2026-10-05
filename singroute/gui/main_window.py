@@ -79,6 +79,11 @@ from singroute.application.router_update import (
     prepare_router_update,
     read_router_outbound_summary,
 )
+from singroute.application.ruantiblock import (
+    RuantiblockState,
+    inspect_ruantiblock,
+    start_ruantiblock,
+)
 from singroute.core.errors import (
     ConfigParseError,
     ConfigPatchError,
@@ -152,6 +157,7 @@ class MainWindow(QMainWindow):
         self._active_worker: Worker | None = None
         self._background_update_worker: Worker | None = None
         self._success_handler: Callable[[object], None] | None = None
+        self._failure_handler: Callable[[object], None] | None = None
         self._available_release: ReleaseInfo | None = None
         self._status_before_app_update = ""
         self._busy = False
@@ -1016,7 +1022,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 QMessageBox.information(self, "Готово", result.message)
-            self._prepare_preview_if_ready()
+            self._check_ruantiblock_after_update()
         else:
             self.show_log_check.setChecked(True)
             QMessageBox.warning(
@@ -1024,6 +1030,94 @@ class MainWindow(QMainWindow):
                 "Обновление не выполнено",
                 _result_details(result),
             )
+
+    def _check_ruantiblock_after_update(self) -> None:
+        client = self._connected_client
+        if client is None or not self.settings.offer_ruantiblock_start:
+            self._prepare_preview_if_ready()
+            return
+
+        def action() -> RuantiblockState:
+            self._active_client = client
+            return inspect_ruantiblock(client)
+
+        self._run_worker(
+            action,
+            self._ruantiblock_checked,
+            "Конфиг обновлён — проверяю ruantiblock…",
+            retry=lambda: None,
+            cancellable=False,
+            on_failure=lambda error: self._ruantiblock_failed(error, starting=False),
+        )
+
+    def _ruantiblock_checked(self, result: object) -> None:
+        if not isinstance(result, RuantiblockState):
+            raise TypeError("Некорректное состояние ruantiblock")
+        self.status_label.setText("Готово — конфиг роутера обновлён.")
+        self._append_log(f"ruantiblock: {result.value}")
+        if result == RuantiblockState.DISABLED:
+            start, suppress = _ask_ruantiblock_start(self)
+            if suppress:
+                candidate = self._settings_from_fields()
+                candidate.offer_ruantiblock_start = False
+                if not self._save_settings(candidate):
+                    QMessageBox.warning(
+                        self,
+                        "Настройка не сохранена",
+                        "Не удалось сохранить выбор «Не показывать больше».",
+                    )
+            if start:
+                self._start_ruantiblock()
+                return
+        elif result == RuantiblockState.UNKNOWN:
+            self._append_log(
+                "Состояние ruantiblock не определено; предложение запуска пропущено."
+            )
+        self._prepare_preview_if_ready()
+
+    def _start_ruantiblock(self) -> None:
+        client = self._connected_client
+        if client is None:
+            return
+
+        def action() -> RuantiblockState:
+            self._active_client = client
+            return start_ruantiblock(client)
+
+        self._run_worker(
+            action,
+            self._ruantiblock_started,
+            "Конфиг обновлён — включаю ruantiblock…",
+            retry=lambda: None,
+            cancellable=False,
+            close_block_message="Дождитесь завершения запуска ruantiblock.",
+            on_failure=lambda error: self._ruantiblock_failed(error, starting=True),
+        )
+
+    def _ruantiblock_started(self, result: object) -> None:
+        if result not in {RuantiblockState.ENABLED, RuantiblockState.UPDATING}:
+            raise TypeError("Запуск ruantiblock не подтверждён")
+        message = "Конфиг роутера обновлён. ruantiblock включён."
+        self.status_label.setText(message)
+        self._append_log(message)
+        QMessageBox.information(self, "ruantiblock", "ruantiblock включён.")
+        self._prepare_preview_if_ready()
+
+    def _ruantiblock_failed(self, error: object, *, starting: bool) -> None:
+        if isinstance(error, SshRouterError):
+            self._disconnect_router("SSH-соединение потеряно")
+        message = (
+            "Конфиг роутера обновлён. Запуск ruantiblock не подтверждён."
+            if starting
+            else "Конфиг роутера обновлён. Не удалось проверить ruantiblock."
+        )
+        self.status_label.setText(message)
+        self._append_log(message)
+        self._append_log(str(error))
+        if starting:
+            self.show_log_check.setChecked(True)
+            QMessageBox.warning(self, "ruantiblock", message)
+        self._prepare_preview_if_ready()
 
     def _run_worker(
         self,
@@ -1034,11 +1128,13 @@ class MainWindow(QMainWindow):
         retry: Callable[[], None],
         cancellable: bool,
         close_block_message: str | None = None,
+        on_failure: Callable[[object], None] | None = None,
     ) -> None:
         if self._busy:
             return
         self._retry_action = retry
         self._success_handler = on_success
+        self._failure_handler = on_failure
         self._cancel_event = threading.Event()
         self._operation_cancellable = cancellable
         self._busy_close_message = close_block_message
@@ -1053,6 +1149,7 @@ class MainWindow(QMainWindow):
     def _worker_finished(self, result: object) -> None:
         on_success = self._success_handler
         self._success_handler = None
+        self._failure_handler = None
         self._active_worker = None
         self._active_client = None
         self._set_busy(False)
@@ -1068,10 +1165,16 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _worker_failed(self, error: object) -> None:
         failed_client = self._active_client
+        on_failure = self._failure_handler
+        self._failure_handler = None
         self._success_handler = None
         self._active_worker = None
         self._active_client = None
         self._set_busy(False)
+        if on_failure is not None:
+            self._retry_action = None
+            on_failure(error)
+            return
         if isinstance(error, SshOperationCancelled):
             if failed_client is self._connected_client:
                 self._disconnect_router("Подключение прервано")
@@ -1289,6 +1392,7 @@ class MainWindow(QMainWindow):
             remember_password=self.remember_password_check.isChecked(),
             auto_connect=base.auto_connect,
             check_updates_on_startup=base.check_updates_on_startup,
+            offer_ruantiblock_start=base.offer_ruantiblock_start,
             last_import_directory=base.last_import_directory,
             window_width=self.width(),
             window_height=self.height(),
@@ -1480,6 +1584,27 @@ def _ask_yes_no(
     if no_button is not None:
         no_button.setText("Нет")
     return QMessageBox.StandardButton(dialog.exec())
+
+
+def _ask_ruantiblock_start(parent: QWidget) -> tuple[bool, bool]:
+    dialog = QMessageBox(parent)
+    dialog.setIcon(QMessageBox.Icon.Question)
+    dialog.setWindowTitle("Включить ruantiblock?")
+    dialog.setText(
+        "На вашем роутере установлен ruantiblock, но сейчас он выключен.\n\n"
+        "Хотите включить его?"
+    )
+    dialog.setStandardButtons(
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    )
+    dialog.button(QMessageBox.StandardButton.Yes).setText("Включить")
+    dialog.button(QMessageBox.StandardButton.No).setText("Не сейчас")
+    dialog.setDefaultButton(QMessageBox.StandardButton.No)
+    dialog.setEscapeButton(QMessageBox.StandardButton.No)
+    suppress = QCheckBox("Не показывать больше", dialog)
+    dialog.setCheckBox(suppress)
+    start = dialog.exec() == QMessageBox.StandardButton.Yes.value
+    return start, suppress.isChecked()
 
 
 def _result_details(result: RouterUpdateResult) -> str:

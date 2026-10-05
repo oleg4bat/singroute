@@ -27,6 +27,13 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 8. Verifies the service and automatically rolls back on failure.
 9. Downloads verified SingRoute updates, replaces the portable executable after
    shutdown, and launches the updated application.
+10. After a successful server replacement, offers to start ruantiblock only if
+    it is installed and its own `raw-status` confirms it is disabled. Starting
+    requires consent and is verified; boot autostart is left unchanged. Missing,
+    active, busy, or unrecognized services do not trigger a prompt. Check or
+    start failures do not change the successful configuration update result.
+    “Do not show again” is saved in `SingRoute.ini` for this copy of the app;
+    the offer can be restored in advanced settings.
 
 SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP
 or gRPC, HAPP/Xray Trojan over TCP/TLS or TCP/Reality, and HAPP Hysteria2.
@@ -63,6 +70,8 @@ its fingerprint on the router.
 Version 0.6.1 imports HAPP/Xray Reality gRPC profiles with `multiMode: true`
 when a regular service name can use the server's standard `Tun` method.
 Version 0.7.2 fixes JSON paste when the clipboard also advertises links.
+Version 0.8.0 offers to start an installed, disabled ruantiblock after a
+successful server replacement, with a persistent option to hide the offer.
 
 Python and an installer are not required. After settings are saved, SingRoute
 creates this file next to the executable:

@@ -33,6 +33,7 @@ class AppSettings:
     remember_password: bool = False
     auto_connect: bool = False
     check_updates_on_startup: bool = True
+    offer_ruantiblock_start: bool = True
     last_import_directory: str = ""
     window_width: int = 960
     window_height: int = 720
@@ -86,6 +87,9 @@ class PortableSettingsStore:
         settings.check_updates_on_startup = _boolean(
             application, "check_updates_on_startup", True
         )
+        settings.offer_ruantiblock_start = _boolean(
+            application, "offer_ruantiblock_start", True
+        )
 
         settings.last_import_directory = _text(application, "last_import_directory", "")
         settings.window_width = _bounded_int(
@@ -114,6 +118,7 @@ class PortableSettingsStore:
         }
         parser["application"] = {
             "check_updates_on_startup": str(settings.check_updates_on_startup).lower(),
+            "offer_ruantiblock_start": str(settings.offer_ruantiblock_start).lower(),
             "last_import_directory": settings.last_import_directory,
             "window_width": str(settings.window_width),
             "window_height": str(settings.window_height),
