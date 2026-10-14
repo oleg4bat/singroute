@@ -13,6 +13,10 @@ class SourceLinkError(ConfigPatchError):
     """A safe, user-facing explanation of an invalid or unsupported share link."""
 
 
+class SourceGroupError(ConfigPatchError):
+    """A safe, user-facing explanation of an unsupported source group."""
+
+
 class WebSocketConfigError(ConfigPatchError):
     """Raised when WebSocket settings cannot be preserved safely."""
 

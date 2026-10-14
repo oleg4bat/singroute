@@ -45,6 +45,88 @@ from singroute.infrastructure.ssh_router import (
 )
 
 
+def test_auto_import_shows_skipped_nodes_and_replaces_warning_state(tmp_path):
+    from test_auto_outbounds import xray_group, xray_server
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
+    )
+    source = xray_group(xray_server("proxy-good"), xray_server("proxy-bad", "xhttp"))
+    assert window._import_source_text(json.dumps(source), "Группа", from_file=False)
+    assert "№2" in window.source_warning_label.text()
+    assert "XHTTP" in window.source_warning_label.text()
+    assert not window.source_warning_label.isHidden()
+    assert window._import_source_text(
+        json.dumps({"outbounds": [{"type": "vless", "server": "one.test"}]}),
+        "Сервер",
+        from_file=False,
+    )
+    assert window.source_warning_label.isHidden()
+    window._import_source_text(json.dumps(source), "Группа", from_file=False)
+    window._clear_source()
+    assert window.source_warning_label.text() == ""
+    assert window.source_warning_label.isHidden()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_auto_import_with_no_compatible_nodes_preserves_previous_source(
+    tmp_path, monkeypatch
+):
+    from test_auto_outbounds import xray_group, xray_server
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
+    )
+    previous = json.dumps({"outbounds": [{"type": "vless", "server": "one.test"}]})
+    window._import_source_text(previous, "Сервер", from_file=False)
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda _parent, _title, text: messages.append(text)
+    )
+    source = xray_group(xray_server("proxy-bad", "xhttp"))
+    assert not window._import_source_text(json.dumps(source), "Группа", from_file=False)
+    assert window.source_editor.toPlainText() == previous
+    assert "нет совместимых" in messages[0]
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_group_preview_renders_masked_members_and_reports_warnings(tmp_path):
+    from test_auto_outbounds import router_config, xray_group, xray_server
+
+    from singroute.application.operation import prepare_config_update
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
+    )
+    update = prepare_config_update(
+        json.dumps(
+            xray_group(xray_server("proxy-good"), xray_server("proxy-bad", "xhttp"))
+        ),
+        json.dumps(router_config()),
+    )
+    plan = RouterUpdatePlan(
+        "/etc/sing-box/config.json",
+        "original",
+        json.dumps(update.updated_config),
+        update.preview,
+        update.has_changes,
+        update.warnings,
+    )
+    window._preview_finished(plan)
+    preview = json.loads(window.new_preview.toPlainText())
+    assert preview["group"]["tolerance"] == 20
+    assert preview["servers"][0]["uuid"] == "***"
+    assert window.source_warning_label.text() == update.warnings[0]
+    assert window.apply_button.isEnabled()
+    window.deleteLater()
+    app.processEvents()
+
+
 @pytest.fixture(autouse=True)
 def disable_scheduled_update_check(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(

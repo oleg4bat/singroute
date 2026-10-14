@@ -6,13 +6,11 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from singroute.core.auto_outbounds import active_selection, replace_selection
 from singroute.core.errors import ConfigParseError, ConfigPatchError
-from singroute.core.patcher import (
-    patch_router_config,
-    select_exported_outbound,
-)
 from singroute.core.preview import summarize_outbound
 from singroute.core.share_links import parse_share_link
+from singroute.core.source_selection import ProxySelection, select_source
 
 MAX_CONFIG_BYTES = 8 * 1024 * 1024
 MAX_JSON_DEPTH = 128
@@ -23,12 +21,14 @@ class ConfigUpdate:
     updated_config: dict[str, Any]
     preview: dict[str, Any]
     has_changes: bool
+    warnings: tuple[str, ...] = ()
 
 
 def summarize_router_outbound(router_config_content: str) -> dict[str, Any]:
     """Parse and mask the outbound currently selected for replacement on a router."""
     router_config = _loads_config(router_config_content, "current_router_config")
-    return summarize_outbound(_get_first_router_outbound(router_config))
+    _get_first_router_outbound(router_config)
+    return summarize_outbound(active_selection(router_config))
 
 
 def prepare_config_update(
@@ -36,18 +36,17 @@ def prepare_config_update(
     current_router_config_content: str,
 ) -> ConfigUpdate:
     """Prepare an outbound update from raw config content without file or SSH I/O."""
-    new_outbound = parse_imported_outbound(imported_config_content)
+    selection = parse_imported_selection(imported_config_content)
     current_router_config = _loads_config(
         current_router_config_content,
         "current_router_config",
     )
 
-    old_outbound = _get_first_router_outbound(current_router_config)
-    updated_config = patch_router_config(current_router_config, new_outbound)
-    updated_outbound = updated_config["outbounds"][0]
+    _get_first_router_outbound(current_router_config)
+    updated_config = replace_selection(current_router_config, selection)
 
-    old_outbound_summary = summarize_outbound(old_outbound)
-    new_outbound_summary = summarize_outbound(updated_outbound)
+    old_outbound_summary = summarize_outbound(active_selection(current_router_config))
+    new_outbound_summary = summarize_outbound(active_selection(updated_config))
 
     return ConfigUpdate(
         updated_config=updated_config,
@@ -55,25 +54,29 @@ def prepare_config_update(
             "old_outbound": old_outbound_summary,
             "new_outbound": new_outbound_summary,
         },
-        has_changes=old_outbound != updated_outbound,
+        has_changes=current_router_config["outbounds"] != updated_config["outbounds"],
+        warnings=selection.warnings,
     )
 
 
-def validate_imported_config(config_text: str) -> None:
+def validate_imported_config(config_text: str) -> ProxySelection:
     """Check that source text contains a selectable supported proxy outbound."""
-    parse_imported_outbound(config_text)
+    return parse_imported_selection(config_text)
 
 
 def parse_imported_outbound(config_text: str) -> dict[str, Any]:
+    """Return the first connection from an import (legacy single-server helper)."""
+    return parse_imported_selection(config_text).servers[0]
+
+
+def parse_imported_selection(config_text: str) -> ProxySelection:
     """Accept JSON exports or a single share link through the same workflow."""
     if config_text_exceeds_limit(config_text):
         raise ConfigParseError("imported_config exceeds the safe limit of 8 MiB")
     text = config_text.lstrip("\ufeff").strip()
     if not text.startswith(("{", "[")) and "://" in text:
-        return parse_share_link(text)
-    return select_exported_outbound(
-        _loads_config(config_text.lstrip("\ufeff"), "imported_config")
-    )
+        return ProxySelection((parse_share_link(text),))
+    return select_source(_loads_config(config_text.lstrip("\ufeff"), "imported_config"))
 
 
 def config_text_exceeds_limit(config_text: str) -> bool:

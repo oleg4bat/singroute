@@ -46,6 +46,7 @@ class RouterUpdatePlan:
     updated_config_text: str
     preview: dict[str, Any]
     has_changes: bool
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ def prepare_router_update(
         updated_config_text=_dump_config_text(update.updated_config),
         preview=update.preview,
         has_changes=update.has_changes,
+        warnings=update.warnings,
     )
 
 

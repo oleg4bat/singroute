@@ -88,6 +88,7 @@ from singroute.application.ruantiblock import (
 from singroute.core.errors import (
     ConfigParseError,
     ConfigPatchError,
+    SourceGroupError,
     SourceLinkError,
     UnsupportedGrpcSettingError,
     UnsupportedVlessTransportError,
@@ -249,6 +250,11 @@ class MainWindow(QMainWindow):
         source_actions.addWidget(self.paste_button)
         source_actions.addWidget(self.open_file_button)
         source_layout.addLayout(source_actions)
+        self.source_warning_label = QLabel()
+        self.source_warning_label.setWordWrap(True)
+        self.source_warning_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.source_warning_label.hide()
+        source_layout.addWidget(self.source_warning_label)
         self.connection_group = QGroupBox("1. Подключение")
         connection_layout = QVBoxLayout(self.connection_group)
         connection_row = QHBoxLayout()
@@ -522,12 +528,17 @@ class MainWindow(QMainWindow):
 
     def _import_source_text(self, text: str, label: str, *, from_file: bool) -> bool:
         try:
-            validate_imported_config(text)
+            selection = validate_imported_config(text)
         except ConfigPatchError as error:
             self._show_source_validation_error(error, from_file=from_file)
             return False
         self._set_source_content(text, label)
+        self._show_import_warnings(selection.warnings)
         return True
+
+    def _show_import_warnings(self, warnings: tuple[str, ...]) -> None:
+        self.source_warning_label.setText("\n".join(warnings))
+        self.source_warning_label.setVisible(bool(warnings))
 
     def _unsupported_source_format(self) -> None:
         QMessageBox.warning(
@@ -540,7 +551,7 @@ class MainWindow(QMainWindow):
     def _show_source_validation_error(
         self, error: ConfigPatchError, *, from_file: bool
     ) -> None:
-        if isinstance(error, (SourceLinkError, WebSocketConfigError)):
+        if isinstance(error, (SourceLinkError, SourceGroupError, WebSocketConfigError)):
             message = str(error)
         elif isinstance(error, ConfigParseError):
             if "safe limit" in str(error):
@@ -614,6 +625,7 @@ class MainWindow(QMainWindow):
     def _clear_source(self) -> None:
         self.source_editor.clear()
         self.source_name_label.setText("Текст ещё не добавлен")
+        self._show_import_warnings(())
         self.old_preview.clear()
         self.new_preview.clear()
         self._invalidate_preview()
@@ -959,6 +971,7 @@ class MainWindow(QMainWindow):
         if not isinstance(result, RouterUpdatePlan):
             raise TypeError("Некорректный результат подготовки превью")
         self.update_plan = result if result.has_changes else None
+        self._show_import_warnings(result.warnings)
         self.old_preview.setPlainText(
             json.dumps(result.preview["old_outbound"], ensure_ascii=False, indent=2)
         )

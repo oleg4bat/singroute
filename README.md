@@ -19,8 +19,8 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
    before loading. JSON or VLESS link text takes priority when the clipboard
    also contains links. Normal text paste still works in connection fields. One local
    file can also be dropped anywhere in the main window.
-3. Converts a supported proxy outbound to the sing-box format.
-4. Shows the current and proposed outbound while masking passwords, UUIDs, and
+3. Converts a supported proxy outbound or the primary server group to sing-box.
+4. Shows the current and proposed outbound (including group members), masking passwords, UUIDs, and
    private keys. Fields use a consistent, documentation-style order in the
    preview and the replaced outbound.
 5. Validates a temporary configuration with `sing-box check`.
@@ -36,6 +36,23 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
     start failures do not change the successful configuration update result.
     “Do not show again” is saved in `SingRoute.ini` for this copy of the app;
     the offer can be restored in advanced settings.
+
+Group imports replace the current exit completely; providers are never combined.
+Version 0.10.0 adds this automatic server-group import and replacement flow.
+For Xray JSON, SingRoute identifies the primary balancer through routing rules,
+excludes loopback fallback tiers, and matches its server tag prefixes. Ambiguous
+groups are rejected. Native sing-box groups can also supply VLESS, Trojan, and
+Hysteria2 connections.
+Unsupported or malformed members are skipped with a visible explanation; an
+empty compatible group leaves the router unchanged. Server reachability is not
+tested during import. The new `urltest` group uses a one-minute interval, a
+20 ms tolerance, and interrupts existing connections when switching servers.
+Source balancing algorithms, priorities, DNS, and routing rules are not copied.
+Only `outbounds` changes: the active exit tag is preserved, and old group members
+created by SingRoute are replaced, while unrelated entries remain unchanged.
+Single-server imports retain their existing behavior and remove the previous
+SingRoute group. Changes stop if owned members are referenced elsewhere or tags
+conflict, rather than deleting unrelated configuration.
 
 SingRoute supports native sing-box outbounds, HAPP/Xray VLESS over TCP or gRPC
 with Reality, TLS, or no TLS, VLESS WebSocket with or without TLS,

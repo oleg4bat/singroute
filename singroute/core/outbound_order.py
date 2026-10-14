@@ -29,6 +29,15 @@ _OUTBOUND_FIELDS = {
         "network",
         "tls",
     ),
+    "urltest": (
+        "type",
+        "tag",
+        "outbounds",
+        "url",
+        "interval",
+        "tolerance",
+        "interrupt_exist_connections",
+    ),
 }
 _NESTED_FIELDS = {
     ("tls",): ("enabled", "server_name", "insecure", "alpn", "reality", "utls"),
@@ -62,6 +71,10 @@ def _order_mapping(
 
 
 def _order_value(value: Any, path: tuple[str, ...]) -> Any:
+    if path == ("group",) and isinstance(value, dict):
+        return order_outbound(value)
+    if path == ("servers",) and isinstance(value, list):
+        return [order_outbound(item) for item in value]
     if isinstance(value, dict):
         return _order_mapping(value, _NESTED_FIELDS.get(path, ()), path)
     if isinstance(value, list):
