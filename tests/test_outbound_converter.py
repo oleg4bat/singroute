@@ -324,14 +324,12 @@ def test_xray_trojan_rejects_unsupported_transport_and_security():
 def test_xray_trojan_rejects_connection_settings_it_cannot_preserve():
     outbound = _xray_trojan_outbound()
     outbound["streamSettings"]["tcpSettings"]["header"] = {"type": "http"}
-    with pytest.raises(ConfigPatchError, match="Unsupported Trojan TCP header"):
+    with pytest.raises(ConfigPatchError, match="Unsupported TCP header"):
         normalize_outbound_to_singbox(outbound)
 
     outbound = _xray_trojan_outbound()
     outbound["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"] = "secret"
-    with pytest.raises(
-        ConfigPatchError, match="Unsupported Trojan TLS setting"
-    ) as raised:
+    with pytest.raises(ConfigPatchError, match="Unsupported TLS setting") as raised:
         normalize_outbound_to_singbox(outbound)
     assert "secret" not in str(raised.value)
 

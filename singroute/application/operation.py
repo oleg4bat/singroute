@@ -12,6 +12,7 @@ from singroute.core.patcher import (
     select_exported_outbound,
 )
 from singroute.core.preview import summarize_outbound
+from singroute.core.share_links import parse_share_link
 
 MAX_CONFIG_BYTES = 8 * 1024 * 1024
 MAX_JSON_DEPTH = 128
@@ -35,14 +36,13 @@ def prepare_config_update(
     current_router_config_content: str,
 ) -> ConfigUpdate:
     """Prepare an outbound update from raw config content without file or SSH I/O."""
-    imported_config = _loads_config(imported_config_content, "imported_config")
+    new_outbound = parse_imported_outbound(imported_config_content)
     current_router_config = _loads_config(
         current_router_config_content,
         "current_router_config",
     )
 
     old_outbound = _get_first_router_outbound(current_router_config)
-    new_outbound = select_exported_outbound(imported_config)
     updated_config = patch_router_config(current_router_config, new_outbound)
     updated_outbound = updated_config["outbounds"][0]
 
@@ -61,8 +61,19 @@ def prepare_config_update(
 
 def validate_imported_config(config_text: str) -> None:
     """Check that source text contains a selectable supported proxy outbound."""
-    imported_config = _loads_config(config_text, "imported_config")
-    select_exported_outbound(imported_config)
+    parse_imported_outbound(config_text)
+
+
+def parse_imported_outbound(config_text: str) -> dict[str, Any]:
+    """Accept JSON exports or a single share link through the same workflow."""
+    if config_text_exceeds_limit(config_text):
+        raise ConfigParseError("imported_config exceeds the safe limit of 8 MiB")
+    text = config_text.lstrip("\ufeff").strip()
+    if not text.startswith(("{", "[")) and "://" in text:
+        return parse_share_link(text)
+    return select_exported_outbound(
+        _loads_config(config_text.lstrip("\ufeff"), "imported_config")
+    )
 
 
 def config_text_exceeds_limit(config_text: str) -> bool:

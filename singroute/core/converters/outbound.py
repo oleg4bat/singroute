@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+from urllib.parse import unquote
 
 from singroute.core.errors import (
     ConfigPatchError,
     UnsupportedGrpcSettingError,
     UnsupportedVlessTransportError,
+    WebSocketConfigError,
 )
 
 
@@ -30,7 +32,7 @@ def normalize_outbound_to_singbox(outbound: dict[str, Any]) -> dict[str, Any]:
         )
 
     if protocol == "vless":
-        return _convert_vless_reality(outbound)
+        return _convert_vless(outbound)
 
     if protocol == "trojan":
         return _convert_trojan(outbound)
@@ -41,45 +43,61 @@ def normalize_outbound_to_singbox(outbound: dict[str, Any]) -> dict[str, Any]:
     raise ConfigPatchError(f"Unsupported outbound protocol: {protocol}")
 
 
-def _convert_vless_reality(outbound: dict[str, Any]) -> dict[str, Any]:
+def _convert_vless(outbound: dict[str, Any]) -> dict[str, Any]:
     settings = _require_dict(outbound, "settings")
     stream_settings = _require_dict(outbound, "streamSettings")
 
     network = _require_value(stream_settings, "network", "streamSettings")
-    if network not in ("tcp", "raw", "grpc"):
+    if network not in ("tcp", "raw", "grpc", "ws"):
         raise UnsupportedVlessTransportError(network)
+    if network in ("tcp", "raw"):
+        _validate_plain_tcp_settings(stream_settings)
 
     security = _require_value(stream_settings, "security", "streamSettings")
-    if security != "reality":
-        raise ConfigPatchError("VLESS conversion supports only Reality security")
+    if security not in ("reality", "tls", "none"):
+        raise ConfigPatchError("Unsupported VLESS security")
+    if network == "ws" and security == "reality":
+        raise WebSocketConfigError("WebSocket с Reality не поддерживается.")
 
-    vnext = _require_non_empty_list(settings, "vnext", "settings")
-    first_vnext = _require_list_item_dict(vnext, "settings.vnext[0]")
-    users = _require_non_empty_list(first_vnext, "users", "settings.vnext[0]")
-    first_user = _require_list_item_dict(users, "settings.vnext[0].users[0]")
+    if "vnext" in settings:
+        vnext = _require_non_empty_list(settings, "vnext", "settings")
+        server = _require_list_item_dict(vnext, "settings.vnext[0]")
+        users = _require_non_empty_list(server, "users", "settings.vnext[0]")
+        user = _require_list_item_dict(users, "settings.vnext[0].users[0]")
+    else:
+        # HAPP also exports connection fields directly in settings.
+        server = user = settings
+
+    if user.get("encryption", "none") != "none":
+        raise ConfigPatchError("Unsupported VLESS encryption")
+    flow = user.get("flow", "")
+    if flow not in ("", "xtls-rprx-vision"):
+        raise ConfigPatchError("Unsupported VLESS flow")
+    if network == "ws" and flow:
+        raise WebSocketConfigError("WebSocket с непустым VLESS flow не поддерживается.")
 
     result: dict[str, Any] = {"type": "vless"}
     _copy_optional(outbound, result, "tag")
     result.update(
         {
-            "server": deepcopy(
-                _require_value(first_vnext, "address", "settings.vnext[0]")
-            ),
-            "server_port": deepcopy(
-                _require_value(first_vnext, "port", "settings.vnext[0]")
-            ),
-            "uuid": deepcopy(
-                _require_value(first_user, "id", "settings.vnext[0].users[0]")
-            ),
+            "server": deepcopy(_require_value(server, "address", "settings")),
+            "server_port": deepcopy(_require_value(server, "port", "settings")),
+            "uuid": deepcopy(_require_value(user, "id", "settings")),
         }
     )
-    _copy_optional(first_user, result, "flow")
+    if flow:
+        result["flow"] = flow
     # Xray streamSettings.network selects the server transport; sing-box network
     # filters proxied traffic, so copying "tcp" here would disable UDP.
 
-    result["tls"] = _convert_reality_tls(stream_settings)
+    if security == "reality":
+        result["tls"] = _convert_reality_tls(stream_settings)
+    elif security == "tls":
+        result["tls"] = _convert_standard_tls(stream_settings)
     if network == "grpc":
         result["transport"] = _convert_grpc_transport(stream_settings)
+    elif network == "ws":
+        result["transport"] = _convert_ws_transport(stream_settings)
     return result
 
 
@@ -122,6 +140,9 @@ def _convert_trojan(outbound: dict[str, Any]) -> dict[str, Any]:
 
 def _convert_reality_tls(stream_settings: dict[str, Any]) -> dict[str, Any]:
     reality_settings = _require_dict(stream_settings, "realitySettings")
+    short_id = reality_settings.get("shortId", "")
+    if not isinstance(short_id, str):
+        raise ConfigPatchError("Invalid string field: realitySettings.shortId")
     tls: dict[str, Any] = {
         "enabled": True,
         "server_name": deepcopy(
@@ -137,21 +158,30 @@ def _convert_reality_tls(stream_settings: dict[str, Any]) -> dict[str, Any]:
             "public_key": deepcopy(
                 _require_value(reality_settings, "publicKey", "realitySettings")
             ),
-            "short_id": deepcopy(
-                _require_value(reality_settings, "shortId", "realitySettings")
-            ),
+            "short_id": short_id,
         },
     }
 
     fingerprint = reality_settings.get("fingerprint")
     if fingerprint:
         tls["utls"] = {"enabled": True, "fingerprint": deepcopy(fingerprint)}
+    if reality_settings.get("alpn"):
+        tls["alpn"] = deepcopy(reality_settings["alpn"])
 
     return tls
 
 
 def _convert_standard_tls(stream_settings: dict[str, Any]) -> dict[str, Any]:
     tls_settings = _optional_dict(stream_settings, "tlsSettings")
+    for key in ("serverName", "fingerprint"):
+        if key in tls_settings and not isinstance(tls_settings[key], str):
+            raise ConfigPatchError("Invalid TLS string setting")
+    if "alpn" in tls_settings:
+        alpn = tls_settings["alpn"]
+        if not isinstance(alpn, list) or any(
+            not isinstance(item, str) or not item for item in alpn
+        ):
+            raise ConfigPatchError("Invalid TLS ALPN setting")
     for key, value in tls_settings.items():
         if key not in {
             "allowInsecure",
@@ -166,13 +196,13 @@ def _convert_standard_tls(stream_settings: dict[str, Any]) -> dict[str, Any]:
             [],
             {},
         ):
-            raise ConfigPatchError("Unsupported Trojan TLS setting")
+            raise ConfigPatchError("Unsupported TLS setting")
     tls: dict[str, Any] = {
         "enabled": True,
         "insecure": _optional_bool(tls_settings, "allowInsecure", "tlsSettings"),
     }
     for source_key, target_key in (("serverName", "server_name"), ("alpn", "alpn")):
-        if source_key in tls_settings:
+        if tls_settings.get(source_key):
             tls[target_key] = deepcopy(tls_settings[source_key])
     fingerprint = tls_settings.get("fingerprint")
     if fingerprint:
@@ -180,14 +210,87 @@ def _convert_standard_tls(stream_settings: dict[str, Any]) -> dict[str, Any]:
     return tls
 
 
+def _convert_ws_transport(stream_settings: dict[str, Any]) -> dict[str, Any]:
+    settings = _optional_dict(stream_settings, "wsSettings")
+    for key, value in settings.items():
+        if key not in {"path", "headers", "host"} and value not in (
+            None,
+            "",
+            False,
+            0,
+            [],
+            {},
+        ):
+            raise WebSocketConfigError(
+                "Конфиг содержит неподдерживаемые настройки WebSocket."
+            )
+    path = settings.get("path", "/")
+    if not isinstance(path, str) or any(c in path for c in "\r\n\x00") or "#" in path:
+        raise WebSocketConfigError("Некорректный путь WebSocket.")
+    path = path or "/"
+    if not path.startswith("/"):
+        raise WebSocketConfigError("Некорректный путь WebSocket.")
+    headers = deepcopy(_optional_dict(settings, "headers"))
+    for key, value in headers.items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or any(
+                c
+                not in "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                for c in key
+            )
+            or not isinstance(value, str)
+            or any(c in value for c in "\r\n\x00")
+        ):
+            raise WebSocketConfigError("Некорректные заголовки WebSocket.")
+    host = settings.get("host", "")
+    if not isinstance(host, str) or any(c in host for c in "\r\n\x00"):
+        raise WebSocketConfigError("Некорректный Host WebSocket.")
+    host_headers = [key for key in headers if key.casefold() == "host"]
+    if len(host_headers) > 1:
+        raise WebSocketConfigError("В конфиге несколько заголовков Host WebSocket.")
+    if host:
+        for key in host_headers:
+            del headers[key]
+        headers["Host"] = host
+    transport: dict[str, Any] = {"type": "ws", "path": path}
+    if headers:
+        transport["headers"] = headers
+
+    # Xray's ?ed=N is a client option, not part of the server's HTTP path.
+    base_path, separator, query = path.partition("?")
+    if separator:
+        parts = query.split("&")
+        early_data = [part for part in parts if unquote(part.partition("=")[0]) == "ed"]
+        if early_data:
+            value = unquote(early_data[0].partition("=")[2])
+            if (
+                len(early_data) != 1
+                or len(value) > 4
+                or not value.isascii()
+                or not value.isdecimal()
+                or not 0 <= int(value) <= 8192
+            ):
+                raise WebSocketConfigError(
+                    "Некорректный параметр early data WebSocket."
+                )
+            query = "&".join(part for part in parts if part not in early_data)
+            transport["path"] = base_path + ("?" + query if query else "")
+            if int(value):
+                transport["max_early_data"] = int(value)
+                transport["early_data_header_name"] = "Sec-WebSocket-Protocol"
+    return transport
+
+
 def _validate_plain_tcp_settings(stream_settings: dict[str, Any]) -> None:
     tcp_settings = _optional_dict(stream_settings, "tcpSettings")
     header = _optional_dict(tcp_settings, "header")
     if header and header != {"type": "none"}:
-        raise ConfigPatchError("Unsupported Trojan TCP header")
+        raise ConfigPatchError("Unsupported TCP header")
     for key, value in tcp_settings.items():
         if key != "header" and value not in (None, "", False, 0, [], {}):
-            raise ConfigPatchError("Unsupported Trojan TCP setting")
+            raise ConfigPatchError("Unsupported TCP setting")
 
 
 def _convert_grpc_transport(stream_settings: dict[str, Any]) -> dict[str, Any]:

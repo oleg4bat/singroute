@@ -12,10 +12,12 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 ## Features
 
 1. Connects to OpenWrt over SSH and keeps the session for subsequent actions.
-2. Imports JSON from the clipboard or a HAPP/NekoBox configuration file.
+2. Imports HAPP/NekoBox JSON or one `vless://` server share link from the
+   clipboard or a file (`.json`/`.txt`). In Happ, use “Copy JSON” or “Share
+   configuration” for a supported server.
    Ctrl+V accepts config text or one copied file and rejects unsupported formats
-   before loading. JSON text takes priority when the clipboard also contains
-   links. Normal text paste still works in connection fields. One local
+   before loading. JSON or VLESS link text takes priority when the clipboard
+   also contains links. Normal text paste still works in connection fields. One local
    file can also be dropped anywhere in the main window.
 3. Converts a supported proxy outbound to the sing-box format.
 4. Shows the current and proposed outbound while masking passwords, UUIDs, and
@@ -35,8 +37,17 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
     “Do not show again” is saved in `SingRoute.ini` for this copy of the app;
     the offer can be restored in advanced settings.
 
-SingRoute supports native sing-box outbounds, HAPP/Xray VLESS Reality over TCP
-or gRPC, HAPP/Xray Trojan over TCP/TLS or TCP/Reality, and HAPP Hysteria2.
+SingRoute supports native sing-box outbounds, HAPP/Xray VLESS over TCP or gRPC
+with Reality, TLS, or no TLS, VLESS WebSocket with or without TLS,
+HAPP/Xray Trojan over TCP/TLS or TCP/Reality, and HAPP Hysteria2.
+VLESS JSON accepts both `settings.vnext[].users[]` and address, port, and UUID
+directly in `settings`. VLESS links support the same transports, IPv6, and
+connection parameters. SNI, WebSocket Host, path, additional JSON headers, and
+TLS fingerprint are preserved separately; WebSocket early data `?ed=N` is
+mapped to the corresponding sing-box fields. Unsupported connection parameters
+and ambiguous links are rejected. Link import does not fetch subscriptions or
+copy DNS, routing, or other source application settings. WebSocket with Reality
+or a nonempty VLESS flow is unsupported.
 Trojan and VLESS Reality gRPC also accept the standard gRPC transport.
 Converted VLESS outbounds allow both TCP and UDP traffic; sing-box chooses its
 default UDP packet encoding. For VLESS Reality with a regular gRPC service name,
@@ -72,6 +83,8 @@ when a regular service name can use the server's standard `Tun` method.
 Version 0.7.2 fixes JSON paste when the clipboard also advertises links.
 Version 0.8.0 offers to start an installed, disabled ruantiblock after a
 successful server replacement, with a persistent option to hide the offer.
+Version 0.9.0 adds VLESS share-link import and HAPP/Xray VLESS WebSocket with
+TLS or without TLS, including both nested and flat HAPP JSON exports.
 
 Python and an installer are not required. After settings are saved, SingRoute
 creates this file next to the executable:
@@ -180,6 +193,12 @@ poetry run pytest -q --cov=singroute --cov-report=term-missing
 poetry run pip-audit
 poetry run python main.py
 ```
+
+To also run real sing-box validation and local VLESS WebSocket/TLS traffic tests,
+set `SING_BOX_BINARY` to a sing-box executable before running pytest. These tests
+use anonymized data and loopback connections, verify SNI, Host, path, certificate
+validation and early data, and never connect to a real router or proxy server.
+They are skipped when the binary is unavailable.
 
 ## Build
 

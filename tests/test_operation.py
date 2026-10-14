@@ -213,6 +213,11 @@ def test_prepare_config_update_wraps_invalid_imported_json():
         prepare_config_update("{not-json", "{}")
 
 
+def test_invalid_imported_json_retains_original_line_numbers():
+    with pytest.raises(ConfigParseError, match="line 3"):
+        prepare_config_update('\n\n{"outbounds": [}', "{}")
+
+
 def test_prepare_config_update_wraps_invalid_router_json():
     with pytest.raises(
         ConfigParseError,

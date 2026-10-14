@@ -9,6 +9,14 @@ class ConfigParseError(ConfigPatchError):
     """Raised when a JSON config text cannot be parsed."""
 
 
+class SourceLinkError(ConfigPatchError):
+    """A safe, user-facing explanation of an invalid or unsupported share link."""
+
+
+class WebSocketConfigError(ConfigPatchError):
+    """Raised when WebSocket settings cannot be preserved safely."""
+
+
 class UnsupportedVlessTransportError(ConfigPatchError):
     """Raised when an Xray VLESS transport cannot be imported safely."""
 

@@ -226,7 +226,7 @@ def test_select_exported_outbound_skips_malformed_hysteria2_candidate():
 
 
 def test_select_exported_outbound_reports_error_when_all_candidates_are_malformed():
-    with pytest.raises(ConfigPatchError, match=r"settings\.vnext"):
+    with pytest.raises(ConfigPatchError, match=r"settings\.address"):
         select_exported_outbound(
             {
                 "outbounds": [

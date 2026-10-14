@@ -20,6 +20,7 @@ from PySide6.QtCore import (
     Qt,
     QThreadPool,
     QTimer,
+    QUrl,
     Signal,
     Slot,
 )
@@ -87,8 +88,10 @@ from singroute.application.ruantiblock import (
 from singroute.core.errors import (
     ConfigParseError,
     ConfigPatchError,
+    SourceLinkError,
     UnsupportedGrpcSettingError,
     UnsupportedVlessTransportError,
+    WebSocketConfigError,
 )
 from singroute.gui.advanced_settings import AdvancedSettingsDialog
 from singroute.gui.brand import brand_icon
@@ -227,7 +230,7 @@ class MainWindow(QMainWindow):
         self.source_editor = QPlainTextEdit()
         self.source_editor.setReadOnly(True)
         self.source_editor.setPlaceholderText(
-            "Вставьте конфиг, откройте или перетащите файл"
+            "Вставьте JSON или vless://, откройте или перетащите файл"
         )
         self.source_editor.setMinimumHeight(72)
         self.source_editor.setMaximumHeight(82)
@@ -449,7 +452,7 @@ class MainWindow(QMainWindow):
             self,
             "Открыть конфиг HAPP или NekoBox",
             start,
-            "JSON (*.json);;Все файлы (*)",
+            "Конфигурации (*.json *.txt);;Все файлы (*)",
         )
         if not path:
             return
@@ -483,13 +486,22 @@ class MainWindow(QMainWindow):
             return
         mime_data = QApplication.clipboard().mimeData()
         text = mime_data.text().lstrip("\ufeff") if mime_data.hasText() else ""
-        # A clipboard item can advertise both config text and URLs. Prefer
-        # JSON-looking text; file copies normally expose a path as their text.
-        if text.lstrip().startswith(("{", "[")):
+        # Source text takes priority; file copies expose a path as their text.
+        if text.lstrip().startswith(("{", "[")) or (
+            text.strip().lower().startswith("vless://")
+            and (mime_data.hasFormat("text/plain") or not mime_data.hasUrls())
+        ):
             self._import_source_text(text, "Конфиг вставлен из буфера", from_file=False)
             return
         if mime_data.hasUrls():
             urls = mime_data.urls()
+            if len(urls) == 1 and urls[0].scheme().lower() == "vless":
+                self._import_source_text(
+                    urls[0].toString(QUrl.ComponentFormattingOption.FullyEncoded),
+                    "Конфиг вставлен из буфера",
+                    from_file=False,
+                )
+                return
             if len(urls) != 1 or not urls[0].isLocalFile():
                 self._unsupported_source_format()
                 return
@@ -521,14 +533,16 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(
             self,
             "Исходный конфиг",
-            "Данный формат не поддерживается. Вставьте текст JSON или "
-            "скопируйте один файл с конфигурацией JSON.",
+            "Данный формат не поддерживается. Вставьте JSON, ссылку vless:// или "
+            "скопируйте один файл с конфигурацией.",
         )
 
     def _show_source_validation_error(
         self, error: ConfigPatchError, *, from_file: bool
     ) -> None:
-        if isinstance(error, ConfigParseError):
+        if isinstance(error, (SourceLinkError, WebSocketConfigError)):
+            message = str(error)
+        elif isinstance(error, ConfigParseError):
             if "safe limit" in str(error):
                 message = (
                     "Конфиг превышает безопасный лимит "
@@ -1333,7 +1347,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Исходный конфиг",
-                "Вставьте текст конфига или откройте JSON-файл.",
+                "Вставьте JSON или ссылку vless:// либо откройте файл конфигурации.",
             )
             return False
         if require_source and config_text_exceeds_limit(source_text):

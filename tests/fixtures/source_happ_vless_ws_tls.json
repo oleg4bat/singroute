@@ -1,0 +1,37 @@
+{
+  "dns": {"servers": ["1.1.1.1"]},
+  "inbounds": [{"protocol": "socks", "port": 10808}],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "tag": "proxy",
+      "settings": {
+        "address": "192.0.2.10",
+        "port": 443,
+        "id": "00000000-0000-4000-8000-000000000001",
+        "encryption": "none",
+        "security": "auto",
+        "level": 8
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "tlsSettings": {
+          "alpn": [],
+          "fingerprint": "firefox",
+          "serverName": "tls.example.test"
+        },
+        "wsSettings": {
+          "headers": {"Host": "ws.example.test"},
+          "path": "/api/v1/picks/sample/queue"
+        }
+      },
+      "mux": {"enabled": false, "concurrency": -1, "xudpConcurrency": 8}
+    },
+    {"protocol": "freedom", "tag": "direct"},
+    {"protocol": "blackhole", "tag": "block"}
+  ],
+  "routing": {"rules": []},
+  "policy": {"levels": {"8": {"connIdle": 300}}},
+  "remarks": "Пример сервера"
+}

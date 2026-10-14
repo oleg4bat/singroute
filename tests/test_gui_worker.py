@@ -26,6 +26,7 @@ from singroute.application.app_update import (
     StagedUpdate,
     UpdateCheckResult,
 )
+from singroute.application.operation import parse_imported_outbound
 from singroute.application.router_client import CommandResult
 from singroute.application.router_connection import RouterInfo
 from singroute.application.router_update import (
@@ -794,6 +795,116 @@ def test_paste_imports_json_text_even_when_clipboard_also_has_urls(
     assert window.settings.last_import_directory == ""
 
 
+@pytest.mark.parametrize("mime_kind", ["text", "text-and-url", "url"])
+@pytest.mark.parametrize("paste_action", ["button", "shortcut"])
+def test_paste_imports_vless_link_through_real_clipboard(
+    monkeypatch: pytest.MonkeyPatch,
+    clipboard_import_window: MainWindow,
+    mime_kind: str,
+    paste_action: str,
+):
+    app = QApplication.instance() or QApplication([])
+    window = clipboard_import_window
+    fixture_dir = Path(__file__).parent / "fixtures"
+    link = (
+        (fixture_dir / "source_happ_vless_ws_tls.txt")
+        .read_text(encoding="utf-8")
+        .strip()
+    )
+    source_json = (fixture_dir / "source_happ_vless_ws_tls.json").read_text(
+        encoding="utf-8"
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    mime_data = QMimeData()
+    if mime_kind in {"text-and-url", "url"}:
+        mime_data.setUrls([QUrl(link)])
+    if mime_kind in {"text-and-url", "text"}:
+        mime_data.setText(link)
+    QApplication.clipboard().setMimeData(mime_data)
+    window.show()
+    window.source_editor.setFocus()
+    app.processEvents()
+
+    if paste_action == "button":
+        window.paste_button.click()
+    else:
+        QTest.keyClick(
+            window.source_editor, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier
+        )
+    app.processEvents()
+
+    assert warnings == []
+    actual = parse_imported_outbound(window.source_editor.toPlainText())
+    expected = parse_imported_outbound(source_json)
+    expected.pop("tag")
+    assert actual == expected
+    assert window.source_name_label.text() == "Конфиг вставлен из буфера"
+    assert window.settings.last_import_directory == ""
+
+
+def test_invalid_vless_link_keeps_previous_import_and_does_not_leak_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clipboard_import_window: MainWindow,
+):
+    window = clipboard_import_window
+    old_source = (
+        '{"outbounds": [{"type": "direct", "tag": "previous"}, {"type": "vless"}]}'
+    )
+    window._set_source_content(old_source, "Предыдущий конфиг")
+    other_file = tmp_path / "other.json"
+    other_file.write_text('{"outbounds": [{"type": "trojan"}]}', encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    mime_data = QMimeData()
+    mime_data.setUrls([QUrl.fromLocalFile(str(other_file))])
+    mime_data.setText("vless://private-uuid@private-server:443?type=ws&security=tls")
+    QApplication.clipboard().setMimeData(mime_data)
+
+    window.paste_button.click()
+
+    assert window.source_editor.toPlainText() == old_source
+    assert window.source_name_label.text() == "Предыдущий конфиг"
+    assert len(warnings) == 1
+    assert "UUID" in warnings[0]
+    assert "private" not in warnings[0]
+
+
+def test_open_file_imports_happ_ws_json_and_vless_text(
+    monkeypatch: pytest.MonkeyPatch,
+    clipboard_import_window: MainWindow,
+):
+    window = clipboard_import_window
+    fixture_dir = Path(__file__).parent / "fixtures"
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    for name in ("source_happ_vless_ws_tls.json", "source_happ_vless_ws_tls.txt"):
+        path = fixture_dir / name
+        monkeypatch.setattr(
+            QFileDialog, "getOpenFileName", lambda *_args, path=path: (str(path), "")
+        )
+        window.open_file_button.click()
+        assert (
+            window.source_editor.toPlainText().strip()
+            == path.read_text(encoding="utf-8").strip()
+        )
+        assert window.settings.last_import_directory == str(path.parent)
+    assert warnings == []
+
+
 def test_paste_rejects_invalid_json_text_instead_of_loading_clipboard_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -910,8 +1021,8 @@ def test_ctrl_v_reports_unsupported_clipboard_format(
 
     assert window.source_editor.toPlainText() == ""
     assert warnings == [
-        "Данный формат не поддерживается. Вставьте текст JSON или "
-        "скопируйте один файл с конфигурацией JSON."
+        "Данный формат не поддерживается. Вставьте JSON, ссылку vless:// или "
+        "скопируйте один файл с конфигурацией."
     ]
     window.close()
     window.deleteLater()
@@ -982,8 +1093,8 @@ def test_open_file_uses_same_source_validation(
     ("network", "expected_message"),
     [
         (
-            "ws",
-            "SingRoute пока не импортирует VLESS с транспортом WebSocket.",
+            "http",
+            "SingRoute пока не импортирует VLESS с транспортом HTTP.",
         ),
         (
             "xhttp",

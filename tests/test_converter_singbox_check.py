@@ -20,6 +20,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
         ("source_happ_trojan_tls.json", "grpc-tls"),
         ("source_happ_trojan_tls.json", "tcp-reality"),
         ("source_happ_vless_reality_grpc.json", None),
+        ("source_happ_vless_ws_tls.json", None),
     ),
 )
 def test_converted_happ_outbound_passes_real_singbox_check(
