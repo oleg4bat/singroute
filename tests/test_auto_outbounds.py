@@ -198,14 +198,15 @@ def test_unowned_groups_and_unrelated_prefix_like_tags_are_preserved():
     assert result["outbounds"][-2:] == [foreign, prefix_like]
 
 
-def test_owned_tag_collision_and_external_references_stop_replacement():
+def test_name_collision_preserves_unrelated_node_and_external_references_stop_replacement():
     source = xray_group(xray_server("proxy-1"))
     first = update(source).updated_config
     member = first["outbounds"][1]
     router = router_config()
     router["outbounds"].append(member)
-    with pytest.raises(ConfigPatchError, match="конфликтуют"):
-        update(source, router)
+    replacement = update(source, router).updated_config
+    assert replacement["outbounds"][0]["outbounds"] == ["proxy-1 (2)"]
+    assert replacement["outbounds"][-1] == member
     first["route"]["rules"].append({"outbound": member["tag"]})
     with pytest.raises(ConfigPatchError, match="других настройках"):
         update({"outbounds": [xray_server("single")]}, first)
@@ -313,3 +314,123 @@ def test_single_import_still_skips_a_malformed_first_outbound():
     result = update({"outbounds": [{"type": ["broken"]}, xray_server("single")]})
     assert result.updated_config["outbounds"][0]["type"] == "vless"
     assert len(result.updated_config["outbounds"]) == 2
+
+
+def test_source_remarks_become_readable_group_tags_and_preview_names():
+    source = xray_group(
+        xray_server("proxy-de"), xray_server("proxy-nl"), xray_server("proxy-ee")
+    )
+    names = ["🇩🇪 Германия", "🇳🇱 Нидерланды", "🇪🇪 Эстония"]
+    for item, name in zip(source["outbounds"], names, strict=True):
+        item["remarks"] = name
+    original = deepcopy(source)
+    result = update(source)
+    assert result.updated_config["outbounds"][0]["outbounds"] == names
+    assert [item["tag"] for item in result.updated_config["outbounds"][1:-1]] == names
+    assert [item["tag"] for item in result.preview["new_outbound"]["servers"]] == names
+    assert all("remarks" not in item for item in result.updated_config["outbounds"])
+    assert source == original
+    assert not update(source, result.updated_config).has_changes
+
+
+def test_name_fallback_and_uniqueness_include_group_and_unrelated_tags():
+    source = xray_group(*(xray_server(f"proxy-{i}") for i in range(6)))
+    for index in (0, 1):
+        source["outbounds"][index]["remarks"] = "Германия"
+    source["outbounds"][2].update(remarks=" ", remark="Нидерланды", name="not used")
+    source["outbounds"][3].update(remarks=None, name="Эстония")
+    source["outbounds"][4]["remarks"] = "router-proxy"
+    source["outbounds"][5]["remarks"] = "direct"
+    result = update(source).updated_config
+    assert result["outbounds"][0]["outbounds"] == [
+        "Германия",
+        "Германия (2)",
+        "Нидерланды",
+        "Эстония",
+        "router-proxy (2)",
+        "direct (2)",
+    ]
+    assert result["outbounds"][-1] == router_config()["outbounds"][-1]
+
+
+def test_skipped_node_does_not_shift_names_to_another_connection():
+    source = xray_group(xray_server("proxy-bad", "xhttp"), xray_server("proxy-good"))
+    source["outbounds"][0]["remarks"] = "Германия"
+    source["outbounds"][1]["remarks"] = "Эстония"
+    result = update(source).updated_config
+    assert result["outbounds"][0]["outbounds"] == ["Эстония"]
+
+
+def test_native_name_metadata_is_used_as_tag_and_not_sent_as_unknown_fields():
+    source = {
+        "outbounds": [
+            {"type": "urltest", "tag": "auto", "outbounds": ["node"]},
+            {
+                "type": "vless",
+                "tag": "node",
+                "server": "node.test",
+                "server_port": 443,
+                "uuid": UUID,
+                "name": "🇪🇪 Эстония",
+            },
+        ]
+    }
+    result = update(source).updated_config
+    assert result["outbounds"][1]["tag"] == "🇪🇪 Эстония"
+    assert "name" not in result["outbounds"][1]
+
+
+def legacy_router():
+    router = router_config()
+    tags = ["singroute-auto-18c12166eba3eee4-1", "singroute-auto-18c12166eba3eee4-2"]
+    router["outbounds"][0] = {
+        "type": "urltest",
+        "tag": "router-proxy",
+        "outbounds": tags,
+        "url": "https://www.gstatic.com/generate_204",
+        "interval": "1m",
+        "tolerance": 20,
+        "interrupt_exist_connections": True,
+    }
+    router["outbounds"][1:1] = [
+        {
+            "type": "vless",
+            "tag": tag,
+            "server": "legacy.test",
+            "server_port": 443,
+            "uuid": UUID,
+        }
+        for tag in tags
+    ]
+    return router
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+def test_v0100_group_migrates_without_leaving_old_numbered_nodes(automatic):
+    router = legacy_router()
+    source = (
+        xray_group(xray_server("proxy-new"))
+        if automatic
+        else {"outbounds": [xray_server("single")]}
+    )
+    result = update(source, router).updated_config
+    assert "singroute-auto-" not in json.dumps(result)
+    assert len(result["outbounds"]) == (3 if automatic else 2)
+    assert result["outbounds"][-1] == router["outbounds"][-1]
+    assert {key: value for key, value in result.items() if key != "outbounds"} == {
+        key: value for key, value in router.items() if key != "outbounds"
+    }
+
+
+def test_legacy_shared_member_is_protected_during_name_migration():
+    router = legacy_router()
+    router["route"]["rules"].append({"outbound": router["outbounds"][1]["tag"]})
+    with pytest.raises(ConfigPatchError, match="других настройках"):
+        update(xray_group(xray_server("proxy-new")), router)
+
+
+def test_names_cannot_inject_log_lines_or_terminal_controls():
+    source = xray_group(xray_server("proxy-1"))
+    source["outbounds"][0]["remarks"] = "Германия\r\nFAKE\x1b\x00\u202e"
+    result = update(source).updated_config
+    assert result["outbounds"][0]["outbounds"] == ["Германия  FAKE"]

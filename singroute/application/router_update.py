@@ -9,6 +9,7 @@ import re
 import secrets
 import shlex
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -18,6 +19,10 @@ from singroute.application.operation import (
     summarize_router_outbound,
 )
 from singroute.application.router_client import CommandResult, RouterClient
+from singroute.application.router_service import (
+    service_running_state,
+    wait_for_service_state,
+)
 
 DEFAULT_CONFIG_PATH = "/etc/sing-box/config.json"
 DEFAULT_SERVICE_NAME = "sing-box"
@@ -47,6 +52,7 @@ class RouterUpdatePlan:
     preview: dict[str, Any]
     has_changes: bool
     warnings: tuple[str, ...] = ()
+    engine: str = "sing-box"
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,7 @@ class RouterUpdateResult:
     backup_deleted: bool = False
     message: str = ""
     details: str = ""
+    partial: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,11 +89,14 @@ def prepare_router_update(
     imported_config_content: str,
     router_client: RouterClient,
     config_path: str = DEFAULT_CONFIG_PATH,
+    engine: str = "sing-box",
 ) -> RouterUpdatePlan:
     """Read the router and prepare a preview without changing remote state."""
     _validate_config_path(config_path)
     original_config_text = router_client.read_text(config_path)
-    update = prepare_config_update(imported_config_content, original_config_text)
+    update = prepare_config_update(
+        imported_config_content, original_config_text, engine
+    )
     return RouterUpdatePlan(
         config_path=config_path,
         original_config_text=original_config_text,
@@ -94,16 +104,18 @@ def prepare_router_update(
         preview=update.preview,
         has_changes=update.has_changes,
         warnings=update.warnings,
+        engine=engine,
     )
 
 
 def read_router_outbound_summary(
     router_client: RouterClient,
     config_path: str = DEFAULT_CONFIG_PATH,
+    engine: str = "sing-box",
 ) -> dict[str, Any]:
     """Read and mask the outbound that the application would replace."""
     _validate_config_path(config_path)
-    return summarize_router_outbound(router_client.read_text(config_path))
+    return summarize_router_outbound(router_client.read_text(config_path), engine)
 
 
 def apply_router_update(
@@ -113,6 +125,9 @@ def apply_router_update(
     sing_box_command: str = DEFAULT_SING_BOX_COMMAND,
     now: datetime | None = None,
     operation_id: str | None = None,
+    verify_service: Callable[[], bool] | None = None,
+    restore_service: Callable[[], bool] | None = None,
+    xray_asset_directory: str | None = None,
 ) -> RouterUpdateResult:
     """Validate, compare-and-swap, restart, and roll back safely."""
     _validate_config_path(plan.config_path)
@@ -125,7 +140,9 @@ def apply_router_update(
     operation_directory_created = False
     backup_available = False
     install_attempted = False
-    validation_result = CommandResult("sing-box check", -1)
+    if plan.engine not in {"sing-box", "xray"}:
+        raise RouterUpdateError("Неизвестный движок роутера.")
+    validation_result = CommandResult(f"{plan.engine} check", -1)
     try:
         _acquire_update_lock(router_client, paths, operation_id)
         lock_acquired = True
@@ -141,9 +158,16 @@ def apply_router_update(
         operation_directory_created = True
         router_client.write_text(paths.temporary_path, plan.updated_config_text)
 
+        check_command = (
+            f"{shlex.quote(sing_box_command)} check -c"
+            if plan.engine == "sing-box"
+            else "xray run -test -format json -config"
+        )
+        if plan.engine == "xray" and xray_asset_directory is not None:
+            _validate_config_path(xray_asset_directory)
+            check_command = f"env XRAY_LOCATION_ASSET={shlex.quote(xray_asset_directory)} {check_command}"
         validation_result = router_client.run(
-            f"{shlex.quote(sing_box_command)} check -c "
-            f"{shlex.quote(paths.temporary_path)}"
+            f"{check_command} {shlex.quote(paths.temporary_path)}"
         )
         if validation_result.exit_code != 0:
             _cleanup_operation_directory(router_client, paths)
@@ -153,7 +177,7 @@ def apply_router_update(
                 backup_path=None,
                 validation_result=validation_result,
                 message=(
-                    "Новый конфиг не прошёл проверку sing-box; "
+                    f"Новый конфиг не прошёл проверку {plan.engine}; "
                     "текущий конфиг не изменён."
                 ),
             )
@@ -194,11 +218,15 @@ def apply_router_update(
                 )
 
         service_command = shlex.quote(f"/etc/init.d/{service_name}")
-        if _restart_and_verify_service(router_client, service_command):
+        if (
+            verify_service()
+            if verify_service is not None
+            else _restart_and_verify_service(router_client, service_command)
+        ):
             cleanup = _cleanup_operation_directory(router_client, paths)
             details = (
-                "Новый конфиг прошёл проверку sing-box; служба успешно "
-                f"перезапущена; {_cleanup_summary(cleanup)}"
+                f"Новый конфиг прошёл проверку {plan.engine}; "
+                f"проверка службы завершена; {_cleanup_summary(cleanup)}"
             )
             return RouterUpdateResult(
                 success=True,
@@ -215,6 +243,7 @@ def apply_router_update(
             service_command=service_command,
             paths=paths,
             validation_result=validation_result,
+            restore_service=restore_service,
         )
     except Exception as error:
         if (
@@ -466,14 +495,17 @@ def _restart_and_verify_service(
     restart_result = _run_or_failure(router_client, f"{service_command} restart")
     if restart_result.exit_code != 0:
         return False
-    status_result = _run_or_failure(router_client, f"{service_command} status")
-    if status_result.exit_code != 0:
+    if not wait_for_service_state(
+        lambda command: _run_or_failure(router_client, command),
+        service_command,
+        running=True,
+    ):
         return False
     stable_status_result = _run_or_failure(
         router_client,
         f"sleep {SERVICE_STABILITY_SECONDS}; {service_command} status",
     )
-    return stable_status_result.exit_code == 0
+    return service_running_state(stable_status_result) is True
 
 
 def _rollback_after_service_failure(
@@ -483,6 +515,7 @@ def _rollback_after_service_failure(
     service_command: str,
     paths: _UpdatePaths,
     validation_result: CommandResult,
+    restore_service: Callable[[], bool] | None = None,
 ) -> RouterUpdateResult:
     restore_command = (
         f"cp -p {shlex.quote(paths.backup_path)} "
@@ -501,25 +534,29 @@ def _rollback_after_service_failure(
             restored = False
     if not restored:
         raise RouterUpdateError(
-            "sing-box не запустился с новым конфигом, и автоматический откат "
+            f"{plan.engine} не запустился с новым конфигом, и автоматический откат "
             "не удалось подтвердить. "
             f"Резервная копия: {paths.backup_path}. "
             f"Причина: {_command_failure_message('ошибка восстановления', restore_result)}"
         )
 
-    rollback_success = _restart_and_verify_service(router_client, service_command)
+    rollback_success = (
+        restore_service()
+        if restore_service is not None
+        else _restart_and_verify_service(router_client, service_command)
+    )
 
     if rollback_success:
         cleanup = _cleanup_operation_directory(router_client, paths)
         backup_deleted = cleanup.backup_deleted
         message = (
-            "sing-box не запустился с новым конфигом. Предыдущий конфиг "
+            f"{plan.engine} не запустился с новым конфигом. Предыдущий конфиг "
             f"автоматически восстановлен; {_cleanup_summary(cleanup)}"
         )
     else:
         backup_deleted = False
         message = (
-            "Новый конфиг отменён, но sing-box не запустился после отката. "
+            f"Новый конфиг отменён, но служба не восстановлена после отката {plan.engine}. "
             f"Проверьте роутер вручную. Резервная копия: {paths.backup_path}"
         )
 

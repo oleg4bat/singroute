@@ -66,6 +66,8 @@ def test_generated_group_selects_working_node_and_carries_real_traffic(tmp_path)
         xray_server("proxy-dead", port=dead_port),
         xray_server("proxy-live", port=server_port),
     )
+    source["outbounds"][0]["remarks"] = "🇩🇪 Недоступный сервер"
+    source["outbounds"][1]["remarks"] = "🇪🇪 Локальный сервер"
     for server in source["outbounds"]:
         server["settings"]["vnext"][0]["address"] = "127.0.0.1"
     router = {
@@ -80,6 +82,10 @@ def test_generated_group_selects_working_node_and_carries_real_traffic(tmp_path)
     config = prepare_config_update(
         json.dumps(source), json.dumps(router)
     ).updated_config
+    assert config["outbounds"][0]["outbounds"] == [
+        "🇩🇪 Недоступный сервер",
+        "🇪🇪 Локальный сервер",
+    ]
     assert config["outbounds"][0]["interval"] == "1m"
     assert config["outbounds"][0]["tolerance"] == 20
     assert config["outbounds"][0]["interrupt_exist_connections"] is True
@@ -130,3 +136,6 @@ def test_generated_group_selects_working_node_and_carries_real_traffic(tmp_path)
                 )
             finally:
                 connection.close()
+    assert "outbound/vless[🇪🇪 Локальный сервер]" in (tmp_path / "client.log").read_text(
+        encoding="utf-8"
+    )

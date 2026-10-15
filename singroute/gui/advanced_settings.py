@@ -67,8 +67,8 @@ class AdvancedSettingsDialog(QDialog):
         form.addRow("SSH-порт", self.port_spin)
         form.addRow("Авторизация", self.auth_combo)
         form.addRow("Приватный SSH-ключ", identity_widget)
-        form.addRow("Конфиг на роутере", self.config_path_edit)
-        form.addRow("Служба OpenWrt", self.service_name_edit)
+        form.addRow("Конфиг sing-box", self.config_path_edit)
+        form.addRow("Служба sing-box", self.service_name_edit)
         form.addRow("Обновления", self.check_updates_on_startup)
         form.addRow("ruantiblock", self.offer_ruantiblock_start)
 

@@ -11,6 +11,13 @@ from .outbound_order import order_outbound
 from .patcher import patch_router_config
 from .source_selection import ProxySelection
 
+AUTO_TEST_SETTINGS = {
+    "url": "https://www.gstatic.com/generate_204",
+    "interval": "1m",
+    "tolerance": 20,
+    "interrupt_exist_connections": True,
+}
+
 
 def _member_prefix(active_tag: str) -> str:
     digest = hashlib.sha256(active_tag.encode("utf-8")).hexdigest()[:16]
@@ -34,8 +41,24 @@ def managed_member_tags(config: dict[str, Any]) -> set[str]:
     expected = [
         _member_prefix(active["tag"]) + str(i) for i in range(1, len(members) + 1)
     ]
-    if members != expected:
+    # v0.10.0 used opaque numbered tags. New groups use source names and the
+    # exact policy shape emitted below; shared nodes are still protected below.
+    named_group = set(active) == {
+        "type",
+        "tag",
+        "outbounds",
+        *AUTO_TEST_SETTINGS,
+    } and all(active.get(key) == value for key, value in AUTO_TEST_SETTINGS.items())
+    if members != expected and not named_group:
         return set()
+    if (
+        any(not isinstance(tag, str) or not tag for tag in members)
+        or len(set(members)) != len(members)
+        or active["tag"] in members
+    ):
+        raise ConfigPatchError(
+            "Не удалось безопасно определить серверы прежней группы."
+        )
     tags = set(members)
     for tag in tags:
         matches = [
@@ -97,11 +120,17 @@ def replace_selection(
         active_tag
     }
     for index, server in enumerate(selection.servers, 1):
-        tag = _member_prefix(active_tag) + str(index)
-        if tag in existing:
-            raise ConfigPatchError(
-                "Теги новой группы конфликтуют с другими outbounds. Замена остановлена."
-            )
+        name = (
+            selection.names[index - 1]
+            if index <= len(selection.names)
+            else f"Сервер №{index}"
+        )
+        tag = name
+        suffix = 2
+        while tag in existing:
+            tag = f"{name} ({suffix})"
+            suffix += 1
+        existing.add(tag)
         member = deepcopy(server)
         member["tag"] = tag
         members.append(order_outbound(member))
@@ -110,10 +139,7 @@ def replace_selection(
         "type": "urltest",
         "tag": active_tag,
         "outbounds": tags,
-        "url": "https://www.gstatic.com/generate_204",
-        "interval": "1m",
-        "tolerance": 20,
-        "interrupt_exist_connections": True,
+        **AUTO_TEST_SETTINGS,
     }
     result["outbounds"] = [active, *members, *preserved]
     return result

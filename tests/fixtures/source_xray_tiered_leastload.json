@@ -1,0 +1,398 @@
+{
+  "inbounds": [
+    {
+      "protocol": "socks",
+      "tag": "client-socks",
+      "port": 10808
+    },
+    {
+      "protocol": "http",
+      "tag": "client-http",
+      "port": 10809
+    }
+  ],
+  "dns": {
+    "servers": [
+      "source.example.test"
+    ]
+  },
+  "log": {
+    "access": "/source/access.log"
+  },
+  "outbounds": [
+    {
+      "tag": "cand01",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "tag": "cand02",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "tag": "cand03",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "tag": "cand04",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "tag": "cand05",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "tag": "cand06",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "tag": "cand07",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "tag": "cand08",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "tag": "cand09",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "tag": "warmup_outbound",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "server.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none"
+      }
+    },
+    {
+      "protocol": "loopback",
+      "settings": {
+        "inboundTag": "entry_t2"
+      },
+      "tag": "loop_to_t2"
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "block"
+    },
+    {
+      "protocol": "dns",
+      "tag": "dns-out"
+    }
+  ],
+  "burstObservatory": {
+    "pingConfig": {
+      "connectivity": "",
+      "destination": "https://probe.example.test/generate_204",
+      "httpMethod": "HEAD",
+      "interval": "10s",
+      "sampling": 10,
+      "timeout": "30s"
+    },
+    "subjectSelector": [
+      "cand01",
+      "cand02",
+      "cand03",
+      "cand04",
+      "cand05",
+      "cand06",
+      "cand07",
+      "cand08",
+      "cand09"
+    ]
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "balancers": [
+      {
+        "fallbackTag": "loop_to_t2",
+        "selector": [
+          "cand01",
+          "cand02",
+          "cand03"
+        ],
+        "strategy": {
+          "settings": {
+            "costs": [
+              {
+                "match": "cand01",
+                "regexp": false,
+                "value": 100000
+              },
+              {
+                "match": "cand02",
+                "regexp": false,
+                "value": 100000
+              },
+              {
+                "match": "cand03",
+                "regexp": false,
+                "value": 100000
+              }
+            ],
+            "expected": 1,
+            "maxRTT": "4s"
+          },
+          "type": "leastLoad"
+        },
+        "tag": "bal_auto_1"
+      },
+      {
+        "fallbackTag": "warmup_outbound",
+        "selector": [
+          "cand04",
+          "cand05",
+          "cand06",
+          "cand07",
+          "cand08",
+          "cand09"
+        ],
+        "strategy": {
+          "settings": {
+            "costs": [
+              {
+                "match": "cand04",
+                "regexp": false,
+                "value": 100000
+              },
+              {
+                "match": "cand05",
+                "regexp": false,
+                "value": 100000
+              },
+              {
+                "match": "cand06",
+                "regexp": false,
+                "value": 100000
+              },
+              {
+                "match": "cand07",
+                "regexp": false,
+                "value": 100000
+              },
+              {
+                "match": "cand08",
+                "regexp": false,
+                "value": 100000
+              },
+              {
+                "match": "cand09",
+                "regexp": false,
+                "value": 100000
+              }
+            ],
+            "expected": 1,
+            "maxRTT": "25s"
+          },
+          "type": "leastLoad"
+        },
+        "tag": "bal_auto_2"
+      }
+    ],
+    "rules": [
+      {
+        "type": "field",
+        "domain": [
+          "blocked.example.test"
+        ],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "inboundTag": [
+          "client-socks",
+          "client-http"
+        ],
+        "balancerTag": "bal_auto_1"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "entry_t2"
+        ],
+        "balancerTag": "bal_auto_2"
+      }
+    ]
+  }
+}

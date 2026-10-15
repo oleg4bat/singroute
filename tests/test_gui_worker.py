@@ -121,7 +121,7 @@ def test_group_preview_renders_masked_members_and_reports_warnings(tmp_path):
     preview = json.loads(window.new_preview.toPlainText())
     assert preview["group"]["tolerance"] == 20
     assert preview["servers"][0]["uuid"] == "***"
-    assert window.source_warning_label.text() == update.warnings[0]
+    assert window.preview_warning_label.text() == update.warnings[0]
     assert window.apply_button.isEnabled()
     window.deleteLater()
     app.processEvents()
@@ -757,7 +757,7 @@ def test_connected_without_source_shows_current_router_outbound(tmp_path: Path):
     )
     assert window.apply_button.isEnabled() is False
     assert window.status_label.text() == (
-        "Текущий outbound загружен — добавьте исходный конфиг"
+        "Текущий сервер загружен — добавьте исходный конфиг"
     )
     window.deleteLater()
     app.processEvents()
@@ -1200,6 +1200,7 @@ def test_open_file_explains_unsupported_vless_transport_without_leaking_values(
         PortableSettingsStore(tmp_path / "settings.ini"),
         FakeCredentialStore(),
     )
+    window._router_info = RouterInfo("OpenWrt test", "/usr/bin/sing-box")
     source_config = json.loads(
         (Path(__file__).parent / "fixtures/source_happ_vless_reality_1.json").read_text(
             encoding="utf-8"
@@ -1268,6 +1269,7 @@ def test_import_rejects_custom_grpc_multi_mode_path_without_leaking_service(
     window = MainWindow(
         PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
     )
+    window._router_info = RouterInfo("OpenWrt test", "/usr/bin/sing-box")
     source = json.loads(
         (
             Path(__file__).parent / "fixtures/source_happ_vless_reality_grpc.json"

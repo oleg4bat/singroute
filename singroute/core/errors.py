@@ -9,6 +9,10 @@ class ConfigParseError(ConfigPatchError):
     """Raised when a JSON config text cannot be parsed."""
 
 
+class XrayConversionError(ConfigPatchError):
+    """A safe explanation of connection options that cannot be mapped to Xray."""
+
+
 class SourceLinkError(ConfigPatchError):
     """A safe, user-facing explanation of an invalid or unsupported share link."""
 

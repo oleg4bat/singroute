@@ -2,8 +2,8 @@
 
 [English](README.md) | [Русский](README_RU.md)
 
-Safe portable Windows application for synchronizing proxy outbounds from HAPP
-or NekoBox exports with a sing-box configuration on an OpenWrt router.
+Safe portable Windows application for importing server connections from sing-box
+and Xray configurations into either engine on an OpenWrt router.
 
 > SingRoute is an independent, unofficial project. It is not affiliated with,
 > sponsored by, or endorsed by SagerNet or the sing-box project. sing-box is
@@ -12,18 +12,18 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
 ## Features
 
 1. Connects to OpenWrt over SSH and keeps the session for subsequent actions.
-2. Imports HAPP/NekoBox JSON or one `vless://` server share link from the
+2. Imports sing-box/Xray JSON (including exports from Happ or NekoBox) or one `vless://` server share link from the
    clipboard or a file (`.json`/`.txt`). In Happ, use “Copy JSON” or “Share
    configuration” for a supported server.
    Ctrl+V accepts config text or one copied file and rejects unsupported formats
    before loading. JSON or VLESS link text takes priority when the clipboard
    also contains links. Normal text paste still works in connection fields. One local
    file can also be dropped anywhere in the main window.
-3. Converts a supported proxy outbound or the primary server group to sing-box.
+3. Converts a supported connection or primary server group for the selected engine.
 4. Shows the current and proposed outbound (including group members), masking passwords, UUIDs, and
    private keys. Fields use a consistent, documentation-style order in the
    preview and the replaced outbound.
-5. Validates a temporary configuration with `sing-box check`.
+5. Validates a temporary configuration with `sing-box check` or `xray run -test -format json`.
 6. Creates a temporary backup on the router after validation succeeds.
 7. Installs the configuration atomically and restarts the OpenWrt service.
 8. Verifies the service and automatically rolls back on failure.
@@ -37,10 +37,46 @@ or NekoBox exports with a sing-box configuration on an OpenWrt router.
     “Do not show again” is saved in `SingRoute.ini` for this copy of the app;
     the offer can be restored in advanced settings.
 
-Group imports replace the current exit completely; providers are never combined.
-Version 0.10.0 adds this automatic server-group import and replacement flow.
+“Use on the router” appears above the preview only when both programs are installed.
+The running service is selected initially. With an empty import, the adjacent
+button prepares a transfer from the other engine; with imported text, it becomes
+the checkable “Update both configurations” action. Both relevant changes are previewed.
+Selecting an inactive target and applying the preview switches services, enables
+the target at boot, and disables the previous service at boot. Failure restores
+the previous target configuration, service state, and boot settings. Migration
+preserves each program's existing inbounds; SingRoute does not configure firewall interception.
+Service stop/start transitions are awaited before continuing, with a bounded
+number of status checks. A failure reports the actual stage that failed.
+Prepared-change notices appear under the preview without resizing the source field.
+If both services are running, the user must stop one before applying. An installed,
+stopped service is a valid target, including an Xray config with empty `outbounds`.
+Reading the configuration remains available even if the service status is unknown;
+only application requires confirmed service state. OpenWrt's `not running` status
+(exit code 5) is treated as stopped, and “active with no instances” is not a running process.
+
+Updates to the two configurations are independent: after a safely rejected or
+rolled-back update, the other configuration can still be updated. An inactive
+engine is validated without starting it. Partial results are shown explicitly;
+ambiguous recovery stops further changes. No installed engines produces a message
+in the preview. Package installation and initial traffic interception are manual.
+
+For an Xray target, native server settings (including XHTTP) are preserved, and
+the primary group's balancer strategy, fallback server, and observatory settings
+are retained. Only the router rules directing traffic to the replaced exit are
+adjusted; client inbounds, DNS, bypass rules, and unrelated metadata are not
+imported. Shared members, conflicting tag prefixes, dependent outbounds, and
+ambiguous groups stop the import. Native groups are imported as a whole.
+Conversion from sing-box supports VLESS, Trojan, and Hysteria2 connections with
+mapped transports/TLS. Unmapped options (including traffic network restrictions)
+are rejected. A sing-box group becomes Xray leastPing with a visible warning.
+
+For a sing-box target, group imports replace the current exit completely; providers are never combined.
+Version 0.11.0 adds Xray configuration import, native Xray group migration,
+and dual-engine update support.
 For Xray JSON, SingRoute identifies the primary balancer through routing rules,
-excludes loopback fallback tiers, and matches its server tag prefixes. Ambiguous
+excludes loopback fallback tiers from primary-group selection, and matches its server tag prefixes. Native Xray imports retain reachable fallback groups,
+their internal loopback routes, final fallback server, and monitoring settings.
+Importing into sing-box keeps its existing primary-group selection policy. Ambiguous
 groups are rejected. Native sing-box groups can also supply VLESS, Trojan, and
 Hysteria2 connections.
 Unsupported or malformed members are skipped with a visible explanation; an
@@ -51,10 +87,14 @@ Source balancing algorithms, priorities, DNS, and routing rules are not copied.
 Only `outbounds` changes: the active exit tag is preserved, and old group members
 created by SingRoute are replaced, while unrelated entries remain unchanged.
 Single-server imports retain their existing behavior and remove the previous
-SingRoute group. Changes stop if owned members are referenced elsewhere or tags
-conflict, rather than deleting unrelated configuration.
+SingRoute group. Group member tags retain the source server name (`remarks`,
+`remark`, or `name`), falling back to the source tag. Unicode and flag emoji are
+preserved, so logs identify the server by name. Duplicate or conflicting names
+receive a numeric suffix. Groups created by v0.10.0 with opaque numbered tags
+are replaced without leaving their old nodes behind. Changes stop if group
+members are referenced elsewhere, rather than deleting unrelated configuration.
 
-SingRoute supports native sing-box outbounds, HAPP/Xray VLESS over TCP or gRPC
+For a sing-box target, SingRoute supports native sing-box outbounds, Xray VLESS over TCP or gRPC
 with Reality, TLS, or no TLS, VLESS WebSocket with or without TLS,
 HAPP/Xray Trojan over TCP/TLS or TCP/Reality, and HAPP Hysteria2.
 VLESS JSON accepts both `settings.vnext[].users[]` and address, port, and UUID
@@ -159,6 +199,20 @@ Default connection settings:
 - configuration: `/etc/sing-box/config.json`;
 - service: `/etc/init.d/sing-box`.
 
+The OpenWrt `xray-core` package uses `/etc/init.d/xray`. SingRoute reads and updates
+only `/etc/xray/config.json`, regardless of examples or other JSON files nearby.
+When applying to Xray, the service is configured to load only this primary file
+if its `conffiles` or `confdir` settings differ. This change is announced in the
+preview; other files remain untouched. Service settings are staged in a private
+UCI copy and replaced only if the original settings still match the preview.
+An absent `confdir` option is a valid disabled directory (UCI get returns 1).
+Failed activation restores the previous settings and JSON. Pending UCI edits
+are preserved and prevent changing service settings. The package's
+`enabled.enabled` flag is enabled when activating Xray and restored on rollback.
+Its configured asset directory is also used for validation. A missing primary
+file or unconfigured service is explained in the preview. A single JSON file
+can contain one server or an automatic group of servers.
+
 The main connection row contains the address, user, password, and password
 storage option. The eye button in the password field temporarily reveals or
 hides the entered password. SSH port, authentication mode, private key,
@@ -216,6 +270,13 @@ set `SING_BOX_BINARY` to a sing-box executable before running pytest. These test
 use anonymized data and loopback connections, verify SNI, Host, path, certificate
 validation and early data, and never connect to a real router or proxy server.
 They are skipped when the binary is unavailable.
+
+Set `XRAY_BINARY` as well to exercise Xray conversion, native leastLoad selection,
+local VLESS traffic, atomic file replacement, service migration/rollback, partial
+updates, and a pinned loopback SSH connection. The update integration harness
+also requires bash (Git for Windows is supported). It uses real Windows engine
+processes and files with a simulated OpenWrt service layer; real OpenWrt TPROXY
+and firewall behavior still require a separate supported-router verification.
 
 ## Build
 

@@ -7,10 +7,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from singroute.core.auto_outbounds import active_selection, replace_selection
+from singroute.core.converters.xray import to_xray
 from singroute.core.errors import ConfigParseError, ConfigPatchError
 from singroute.core.preview import summarize_outbound
 from singroute.core.share_links import parse_share_link
 from singroute.core.source_selection import ProxySelection, select_source
+from singroute.core.xray_outbounds import (
+    XraySelection,
+    replace_xray_selection,
+    select_xray_source,
+    xray_preview,
+)
 
 MAX_CONFIG_BYTES = 8 * 1024 * 1024
 MAX_JSON_DEPTH = 128
@@ -24,9 +31,13 @@ class ConfigUpdate:
     warnings: tuple[str, ...] = ()
 
 
-def summarize_router_outbound(router_config_content: str) -> dict[str, Any]:
+def summarize_router_outbound(
+    router_config_content: str, engine: str = "sing-box"
+) -> dict[str, Any]:
     """Parse and mask the outbound currently selected for replacement on a router."""
     router_config = _loads_config(router_config_content, "current_router_config")
+    if engine == "xray":
+        return summarize_outbound(xray_preview(router_config))
     _get_first_router_outbound(router_config)
     return summarize_outbound(active_selection(router_config))
 
@@ -34,19 +45,28 @@ def summarize_router_outbound(router_config_content: str) -> dict[str, Any]:
 def prepare_config_update(
     imported_config_content: str,
     current_router_config_content: str,
+    engine: str = "sing-box",
 ) -> ConfigUpdate:
     """Prepare an outbound update from raw config content without file or SSH I/O."""
-    selection = parse_imported_selection(imported_config_content)
+    selection = parse_imported_selection(imported_config_content, engine)
     current_router_config = _loads_config(
         current_router_config_content,
         "current_router_config",
     )
 
-    _get_first_router_outbound(current_router_config)
-    updated_config = replace_selection(current_router_config, selection)
-
-    old_outbound_summary = summarize_outbound(active_selection(current_router_config))
-    new_outbound_summary = summarize_outbound(active_selection(updated_config))
+    if engine == "xray":
+        updated_config = replace_xray_selection(current_router_config, selection)
+        old_outbound_summary = summarize_outbound(xray_preview(current_router_config))
+        new_outbound_summary = summarize_outbound(xray_preview(updated_config))
+    elif engine == "sing-box":
+        _get_first_router_outbound(current_router_config)
+        updated_config = replace_selection(current_router_config, selection)
+        old_outbound_summary = summarize_outbound(
+            active_selection(current_router_config)
+        )
+        new_outbound_summary = summarize_outbound(active_selection(updated_config))
+    else:
+        raise ConfigPatchError("Неизвестный движок роутера.")
 
     return ConfigUpdate(
         updated_config=updated_config,
@@ -54,14 +74,16 @@ def prepare_config_update(
             "old_outbound": old_outbound_summary,
             "new_outbound": new_outbound_summary,
         },
-        has_changes=current_router_config["outbounds"] != updated_config["outbounds"],
+        has_changes=current_router_config != updated_config,
         warnings=selection.warnings,
     )
 
 
-def validate_imported_config(config_text: str) -> ProxySelection:
+def validate_imported_config(
+    config_text: str, engine: str = "sing-box"
+) -> ProxySelection | XraySelection:
     """Check that source text contains a selectable supported proxy outbound."""
-    return parse_imported_selection(config_text)
+    return parse_imported_selection(config_text, engine)
 
 
 def parse_imported_outbound(config_text: str) -> dict[str, Any]:
@@ -69,14 +91,22 @@ def parse_imported_outbound(config_text: str) -> dict[str, Any]:
     return parse_imported_selection(config_text).servers[0]
 
 
-def parse_imported_selection(config_text: str) -> ProxySelection:
+def parse_imported_selection(
+    config_text: str, engine: str = "sing-box"
+) -> ProxySelection | XraySelection:
     """Accept JSON exports or a single share link through the same workflow."""
     if config_text_exceeds_limit(config_text):
         raise ConfigParseError("imported_config exceeds the safe limit of 8 MiB")
     text = config_text.lstrip("\ufeff").strip()
     if not text.startswith(("{", "[")) and "://" in text:
-        return ProxySelection((parse_share_link(text),))
-    return select_source(_loads_config(config_text.lstrip("\ufeff"), "imported_config"))
+        server = parse_share_link(text)
+        return (
+            XraySelection((to_xray(server),))
+            if engine == "xray"
+            else ProxySelection((server,))
+        )
+    config = _loads_config(config_text.lstrip("\ufeff"), "imported_config")
+    return select_xray_source(config) if engine == "xray" else select_source(config)
 
 
 def config_text_exceeds_limit(config_text: str) -> bool:

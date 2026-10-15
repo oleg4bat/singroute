@@ -30,6 +30,9 @@ def test_inspect_router_returns_release_and_binary_and_reports_progress():
         "command -v sing-box",
         "test -r /etc/sing-box/config.json",
         "test -x /etc/init.d/sing-box",
+        "/etc/init.d/sing-box status",
+        "/etc/init.d/sing-box enabled",
+        "command -v xray",
     ]
 
 
@@ -48,8 +51,15 @@ def test_inspect_router_stops_on_failed_compatibility_check(
 ):
     client = FakeRouterClient(failed_command=failed_command)
 
-    with pytest.raises(RouterCompatibilityError, match=message):
-        inspect_router(client, "/etc/sing-box/config.json", "sing-box")
+    if failed_command == "cat /etc/openwrt_release":
+        with pytest.raises(RouterCompatibilityError, match=message):
+            inspect_router(client, "/etc/sing-box/config.json", "sing-box")
+    else:
+        result = inspect_router(client, "/etc/sing-box/config.json", "sing-box")
+        if failed_command == "command -v sing-box":
+            assert result.available_engines == ()
+        else:
+            assert message in result.available_engines[0].issue
 
 
 @dataclass

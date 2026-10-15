@@ -10,6 +10,7 @@ from .outbound_order import order_outbound
 SENSITIVE_FIELDS = {
     "api_key",
     "uuid",
+    "id",
     "password",
     "passwd",
     "pwd",

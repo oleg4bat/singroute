@@ -267,6 +267,28 @@ def test_service_that_dies_during_stability_window_triggers_rollback():
     assert client.service_lock_states == [True] * 6
 
 
+def test_registered_service_without_process_instances_does_not_report_success():
+    status_command = "/etc/init.d/sing-box status"
+    client = SafeFakeRouterClient(
+        files={CONFIG_PATH: _router_config_text()},
+        sequenced_results={
+            status_command: [
+                CommandResult(status_command, 0, "active with no instances\n"),
+                CommandResult(status_command, 0, "running\n"),
+            ],
+            "sleep 1; /etc/init.d/sing-box status": [
+                CommandResult("sleep 1; /etc/init.d/sing-box status", 5)
+            ]
+            * 10,
+        },
+    )
+    plan = prepare_router_update(_imported_config_text(), client)
+    result = _apply(plan, client)
+    assert not result.success
+    assert result.rollback_success
+    assert client.files[CONFIG_PATH] == plan.original_config_text
+
+
 def test_failed_service_after_rollback_keeps_backup_for_manual_recovery():
     restart_command = "/etc/init.d/sing-box restart"
     status_command = "/etc/init.d/sing-box status"
@@ -281,6 +303,10 @@ def test_failed_service_after_rollback_keeps_backup_for_manual_recovery():
                 CommandResult(status_command, 1),
                 CommandResult(status_command, 1),
             ],
+            "sleep 1; /etc/init.d/sing-box status": [
+                CommandResult("sleep 1; /etc/init.d/sing-box status", 1)
+            ]
+            * 10,
         },
     )
     plan = prepare_router_update(_imported_config_text(), client)

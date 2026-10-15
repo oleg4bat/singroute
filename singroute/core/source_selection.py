@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from unicodedata import category, normalize
 from uuid import UUID
 
 from .converters import normalize_outbound_to_singbox
@@ -19,6 +20,7 @@ class ProxySelection:
     servers: tuple[dict[str, Any], ...]
     automatic: bool = False
     warnings: tuple[str, ...] = ()
+    names: tuple[str, ...] = ()
 
 
 def select_source(config: dict[str, Any]) -> ProxySelection:
@@ -64,6 +66,19 @@ def select_source(config: dict[str, Any]) -> ProxySelection:
 def _xray_candidates(
     config: dict[str, Any], routing: dict[str, Any], balancers: Any
 ) -> list[dict[str, Any]]:
+    primary = _xray_primary_balancer(config, routing, balancers)
+    outbounds = _tagged_outbounds(config.get("outbounds"))
+    prefixes = _strings(primary.get("selector"))
+    return [
+        item
+        for tag, item in outbounds.items()
+        if any(tag.startswith(p) for p in prefixes)
+    ]
+
+
+def _xray_primary_balancer(
+    config: dict[str, Any], routing: dict[str, Any], balancers: Any
+) -> dict[str, Any]:
     if not isinstance(balancers, list) or not all(
         isinstance(b, dict) for b in balancers
     ):
@@ -110,12 +125,7 @@ def _xray_candidates(
     ]
     if len(matches) != 1:
         raise SourceGroupError("Основная группа серверов отсутствует или неоднозначна.")
-    prefixes = _strings(matches[0].get("selector"))
-    return [
-        item
-        for tag, item in outbounds.items()
-        if any(tag.startswith(p) for p in prefixes)
-    ]
+    return matches[0]
 
 
 def _strings(value: Any) -> list[str]:
@@ -150,7 +160,7 @@ def _tagged_outbounds(value: Any) -> dict[str, dict[str, Any]]:
 
 
 def _convert_group(candidates: list[dict[str, Any]]) -> ProxySelection:
-    servers, warnings = [], []
+    servers, warnings, names = [], [], []
     for index, candidate in enumerate(candidates, 1):
         # Ordinals identify source rows without echoing arbitrary tags/secrets.
         label = f"Сервер №{index}"
@@ -194,12 +204,36 @@ def _convert_group(candidates: list[dict[str, Any]]) -> ProxySelection:
                 reason = f"транспорт {error.network.upper()} не поддерживается"
             warnings.append(f"{label} пропущен: {reason}.")
         else:
+            # Display metadata belongs in the selected tag, not in sing-box fields.
+            for key in ("remarks", "remark", "name"):
+                converted.pop(key, None)
             servers.append(converted)
+            names.append(_server_name(candidate, index))
     if not servers:
         raise SourceGroupError(
             "В основной группе нет совместимых серверов. Импорт невозможен."
         )
-    return ProxySelection(tuple(servers), automatic=True, warnings=tuple(warnings))
+    return ProxySelection(
+        tuple(servers), automatic=True, warnings=tuple(warnings), names=tuple(names)
+    )
+
+
+def _server_name(candidate: dict[str, Any], index: int) -> str:
+    for key in ("remarks", "remark", "name", "tag"):
+        value = candidate.get(key)
+        if not isinstance(value, str):
+            continue
+        # Keep Unicode names/emoji, but do not introduce log lines or terminal controls.
+        value = "".join(
+            " " if char.isspace() else char
+            for char in normalize("NFC", value)
+            if category(char)[0] != "C"
+            or char.isspace()
+            or char in {"\u200c", "\u200d"}
+        ).strip()[:128]
+        if value:
+            return value
+    return f"Сервер №{index}"
 
 
 def _validate_group_connection(outbound: dict[str, Any]) -> None:

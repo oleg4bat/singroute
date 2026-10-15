@@ -36,6 +36,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -47,6 +48,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
@@ -63,6 +65,11 @@ from singroute.application.app_update import (
     is_portable_windows_build,
     launch_staged_update,
     stage_update,
+)
+from singroute.application.engine_update import (
+    EngineUpdatePlan,
+    apply_engine_update,
+    prepare_engine_update,
 )
 from singroute.application.operation import (
     MAX_CONFIG_BYTES,
@@ -93,6 +100,7 @@ from singroute.core.errors import (
     UnsupportedGrpcSettingError,
     UnsupportedVlessTransportError,
     WebSocketConfigError,
+    XrayConversionError,
 )
 from singroute.gui.advanced_settings import AdvancedSettingsDialog
 from singroute.gui.brand import brand_icon
@@ -153,7 +161,11 @@ class MainWindow(QMainWindow):
             else None
         )
         self.thread_pool = QThreadPool.globalInstance()
-        self.update_plan: RouterUpdatePlan | None = None
+        self.update_plan: RouterUpdatePlan | EngineUpdatePlan | None = None
+        self._router_info: RouterInfo | None = None
+        self._target_engine = "sing-box"
+        self._transfer_requested = False
+        self._source_warnings: tuple[str, ...] = ()
         self._retry_action: Callable[[], None] | None = None
         self._cancel_event: threading.Event | None = None
         self._active_client: SshRouterClient | None = None
@@ -174,6 +186,9 @@ class MainWindow(QMainWindow):
         self.resize(self.settings.window_width, self.settings.window_height)
         self.setMinimumSize(780, 620)
         self._build_ui()
+        self._layout_update_timer = QTimer(self)
+        self._layout_update_timer.setSingleShot(True)
+        self._layout_update_timer.timeout.connect(self._update_layout_minimum)
         self._build_shortcuts()
         self.installEventFilter(self)
         for widget in self.findChildren(QWidget):
@@ -227,14 +242,16 @@ class MainWindow(QMainWindow):
         root.addLayout(header)
 
         self.source_group = QGroupBox("2. Источник сервера")
+        self.source_group.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         source_layout = QVBoxLayout(self.source_group)
         self.source_editor = QPlainTextEdit()
         self.source_editor.setReadOnly(True)
         self.source_editor.setPlaceholderText(
-            "Вставьте JSON или vless://, откройте или перетащите файл"
+            "Вставьте JSON sing-box / Xray или vless://, откройте или перетащите файл"
         )
-        self.source_editor.setMinimumHeight(72)
-        self.source_editor.setMaximumHeight(82)
+        self.source_editor.setFixedHeight(82)
         source_layout.addWidget(self.source_editor)
         source_actions = QHBoxLayout()
         self.source_name_label = QLabel("Текст ещё не добавлен")
@@ -303,24 +320,64 @@ class MainWindow(QMainWindow):
         root.addWidget(self.connection_group)
         root.addWidget(self.source_group)
 
-        preview_group = QGroupBox("3. Предварительный просмотр outbound")
-        preview_layout = QHBoxLayout(preview_group)
+        self.engine_controls = QWidget()
+        engine_layout = QHBoxLayout(self.engine_controls)
+        engine_layout.setContentsMargins(0, 0, 0, 0)
+        engine_layout.addWidget(QLabel("Использовать на роутере"))
+        self.engine_buttons = QButtonGroup(self)
+        self.singbox_radio = QRadioButton("sing-box")
+        self.xray_radio = QRadioButton("Xray")
+        for name, button in (
+            ("sing-box", self.singbox_radio),
+            ("xray", self.xray_radio),
+        ):
+            self.engine_buttons.addButton(button)
+            engine_layout.addWidget(button)
+            button.toggled.connect(
+                lambda checked, engine=name: (
+                    self._engine_changed(engine) if checked else None
+                )
+            )
+        with QSignalBlocker(self.singbox_radio):
+            self.singbox_radio.setChecked(True)
+        self.engine_action = QPushButton("Перенести сервер")
+        self.engine_action.setObjectName("engineActionButton")
+        self.engine_action.clicked.connect(self._engine_action_clicked)
+        self.engine_state_label = QLabel()
+        self.engine_state_label.setObjectName("mutedLabel")
+        engine_layout.addWidget(self.engine_state_label)
+        engine_layout.addStretch()
+        engine_layout.addWidget(self.engine_action)
+        self.engine_controls.hide()
+        root.addWidget(self.engine_controls)
+
+        preview_group = QGroupBox("3. Предварительный просмотр сервера")
+        preview_layout = QVBoxLayout(preview_group)
+        preview_columns = QHBoxLayout()
         old_layout = QVBoxLayout()
         old_layout.addWidget(QLabel("Сейчас на роутере"))
         self.old_preview = QPlainTextEdit()
         self.old_preview.setReadOnly(True)
+        self.old_preview.setMinimumHeight(110)
         self.old_preview.setPlaceholderText(
-            "Подключитесь, чтобы увидеть текущий outbound"
+            "Подключитесь, чтобы увидеть текущий сервер"
         )
         old_layout.addWidget(self.old_preview)
         new_layout = QVBoxLayout()
         new_layout.addWidget(QLabel("После обновления"))
         self.new_preview = QPlainTextEdit()
         self.new_preview.setReadOnly(True)
+        self.new_preview.setMinimumHeight(110)
         self.new_preview.setPlaceholderText("Загрузите исходный конфиг для сравнения")
         new_layout.addWidget(self.new_preview)
-        preview_layout.addLayout(old_layout, 1)
-        preview_layout.addLayout(new_layout, 1)
+        preview_columns.addLayout(old_layout, 1)
+        preview_columns.addLayout(new_layout, 1)
+        preview_layout.addLayout(preview_columns, 1)
+        self.preview_warning_label = QLabel()
+        self.preview_warning_label.setWordWrap(True)
+        self.preview_warning_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.preview_warning_label.hide()
+        preview_layout.addWidget(self.preview_warning_label)
         root.addWidget(preview_group, 1)
 
         action_row = QHBoxLayout()
@@ -373,6 +430,7 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self.centralWidget() and event.type() == QEvent.Type.Resize:
+            self._layout_update_timer.start(0)
             self.drop_hint.setGeometry(self.centralWidget().rect())
         if isinstance(watched, QWidget) and watched.window() is self:
             if event.type() in (
@@ -456,7 +514,7 @@ class MainWindow(QMainWindow):
         start = self.settings.last_import_directory or str(Path.home())
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Открыть конфиг HAPP или NekoBox",
+            "Открыть конфиг sing-box или Xray",
             start,
             "Конфигурации (*.json *.txt);;Все файлы (*)",
         )
@@ -528,7 +586,18 @@ class MainWindow(QMainWindow):
 
     def _import_source_text(self, text: str, label: str, *, from_file: bool) -> bool:
         try:
-            selection = validate_imported_config(text)
+            try:
+                selection = validate_imported_config(text, self._target_engine)
+            except ConfigPatchError as original_error:
+                if (
+                    self._router_info is not None
+                    and self._router_info.available_engines
+                ):
+                    raise
+                try:
+                    selection = validate_imported_config(text, "xray")
+                except ConfigPatchError:
+                    raise original_error from original_error.__cause__
         except ConfigPatchError as error:
             self._show_source_validation_error(error, from_file=from_file)
             return False
@@ -537,8 +606,26 @@ class MainWindow(QMainWindow):
         return True
 
     def _show_import_warnings(self, warnings: tuple[str, ...]) -> None:
+        self._source_warnings = warnings
         self.source_warning_label.setText("\n".join(warnings))
         self.source_warning_label.setVisible(bool(warnings))
+        self._update_layout_minimum()
+
+    def _show_preview_warnings(self, warnings: tuple[str, ...]) -> None:
+        self.preview_warning_label.setText("\n".join(warnings))
+        self.preview_warning_label.setVisible(bool(warnings))
+        self._update_layout_minimum()
+
+    def _update_layout_minimum(self) -> None:
+        self.centralWidget().layout().activate()
+        for label in (self.source_warning_label, self.preview_warning_label):
+            label.setMinimumHeight(
+                max(0, label.heightForWidth(label.width()))
+                if not label.isHidden()
+                else 0
+            )
+        self.centralWidget().layout().activate()
+        self.setMinimumHeight(max(620, self.centralWidget().minimumSizeHint().height()))
 
     def _unsupported_source_format(self) -> None:
         QMessageBox.warning(
@@ -551,7 +638,15 @@ class MainWindow(QMainWindow):
     def _show_source_validation_error(
         self, error: ConfigPatchError, *, from_file: bool
     ) -> None:
-        if isinstance(error, (SourceLinkError, SourceGroupError, WebSocketConfigError)):
+        if isinstance(
+            error,
+            (
+                SourceLinkError,
+                SourceGroupError,
+                WebSocketConfigError,
+                XrayConversionError,
+            ),
+        ):
             message = str(error)
         elif isinstance(error, ConfigParseError):
             if "safe limit" in str(error):
@@ -618,12 +713,16 @@ class MainWindow(QMainWindow):
             )
             return
         self.source_editor.setPlainText(content)
+        self._transfer_requested = False
+        self._sync_engine_controls()
         self.source_name_label.setText(label)
         self._invalidate_preview()
         self._prepare_preview_if_ready()
 
     def _clear_source(self) -> None:
         self.source_editor.clear()
+        self._transfer_requested = False
+        self._sync_engine_controls()
         self.source_name_label.setText("Текст ещё не добавлен")
         self._show_import_warnings(())
         self.old_preview.clear()
@@ -783,9 +882,21 @@ class MainWindow(QMainWindow):
             "key": "ключ",
             "password": "пароль",
         }
+        engine = (
+            next(
+                (
+                    e
+                    for e in self._router_info.available_engines
+                    if e.name == self._target_engine
+                ),
+                None,
+            )
+            if self._router_info
+            else None
+        )
         return (
             f"Порт {self.settings.port} · {auth_labels.get(self.settings.auth_mode, 'авто')} · "
-            f"{self.settings.config_path}"
+            f"{engine.config_path if engine else self.settings.config_path}"
         )
 
     def _remember_password_changed(self, _checked: bool) -> None:
@@ -808,6 +919,7 @@ class MainWindow(QMainWindow):
         self.password_visibility_action.setToolTip(label)
 
     def _invalidate_preview(self, *_: object) -> None:
+        self._show_preview_warnings(())
         if self.update_plan is not None:
             self.update_plan = None
             self.apply_button.setEnabled(False)
@@ -857,6 +969,10 @@ class MainWindow(QMainWindow):
         if not isinstance(result, ConnectedRouter):
             raise TypeError("Некорректный результат подключения")
         self._connected_client = result.client
+        self._router_info = result.info
+        self._target_engine = result.info.preferred_engine or "sing-box"
+        self._transfer_requested = False
+        self._sync_engine_controls()
         self.connection_state_label.setText("Подключено")
         self.connection_state_label.setObjectName("connectedLabel")
         self.connection_state_label.style().unpolish(self.connection_state_label)
@@ -868,9 +984,8 @@ class MainWindow(QMainWindow):
         if not settings_saved:
             with QSignalBlocker(self.auto_connect_check):
                 self.auto_connect_check.setChecked(self.settings.auto_connect)
-        message = (
-            f"Подключение успешно: {result.info.openwrt_release}; "
-            f"sing-box: {result.info.sing_box_path}"
+        message = f"Подключение успешно: {result.info.openwrt_release}; движки: " + (
+            ", ".join(e.name for e in result.info.available_engines) or "не установлены"
         )
         if not settings_saved:
             message += "; настройки автоподключения не сохранены"
@@ -881,6 +996,11 @@ class MainWindow(QMainWindow):
     def _disconnect_router(self, reason: str = "Отключено") -> None:
         client = self._connected_client
         self._connected_client = None
+        self._router_info = None
+        self._transfer_requested = False
+        self._show_preview_warnings(())
+        self.engine_controls.hide()
+        self.connection_hint.setText(self._advanced_summary())
         if client is not None:
             client.close()
         self.connection_state_label.setText("Не подключено")
@@ -894,10 +1014,156 @@ class MainWindow(QMainWindow):
         self.new_preview.clear()
         self.status_label.setText(reason)
 
+    def _sync_engine_controls(self) -> None:
+        engines = self._router_info.available_engines if self._router_info else ()
+        self.engine_controls.setVisible(len(engines) == 2)
+        for name, button in (
+            ("sing-box", self.singbox_radio),
+            ("xray", self.xray_radio),
+        ):
+            with QSignalBlocker(button):
+                button.setChecked(name == self._target_engine)
+        imported = bool(self.source_editor.toPlainText().strip())
+        with QSignalBlocker(self.engine_action):
+            if imported != self.engine_action.isCheckable():
+                self.engine_action.setChecked(False)
+            self.engine_action.setCheckable(imported)
+            self.engine_action.setText(
+                ("✓ " if self.engine_action.isChecked() else "")
+                + "Обновить оба конфига"
+                if imported
+                else "Перенести из "
+                + next(
+                    (
+                        "Xray" if e.name == "xray" else "sing-box"
+                        for e in engines
+                        if e.name != self._target_engine
+                    ),
+                    "другой программы",
+                )
+            )
+            action_issue = self._engine_action_issue()
+            self.engine_action.setEnabled(not action_issue)
+            self.engine_action.setToolTip(
+                action_issue
+                or (
+                    "Обновить оба конфига этим импортом; работает выбранный движок"
+                    if imported
+                    else "Взять сервер или группу из другого движка и показать изменения в превью"
+                )
+            )
+        running = [
+            "Xray" if e.name == "xray" else "sing-box" for e in engines if e.running
+        ]
+        uncertain = any(e.service_state_issue for e in engines)
+        self.engine_state_label.setText(
+            "Статус служб неизвестен"
+            if uncertain
+            else "Сейчас работает: " + ", ".join(running)
+            if running
+            else "Программы остановлены"
+        )
+        self.connection_hint.setText(self._advanced_summary())
+        self.engine_controls.setEnabled(not self._busy)
+
+    def _engine_action_issue(self) -> str:
+        if self._connected_client is None or self._router_info is None:
+            return "Сначала подключитесь к роутеру."
+        engines = self._router_info.available_engines
+        target = next((e for e in engines if e.name == self._target_engine), None)
+        if target is None:
+            return "Выбранная программа не установлена на роутере."
+        if target.issue:
+            return target.issue
+        if not self.source_editor.toPlainText().strip():
+            source = next((e for e in engines if e.name != self._target_engine), None)
+            if source is None:
+                return "Для переноса нужны sing-box и Xray на роутере."
+            if source.issue:
+                return source.issue
+        return ""
+
+    def _engine_changed(self, engine: str) -> None:
+        if self._busy or engine == self._target_engine:
+            return
+        self._target_engine = engine
+        self._transfer_requested = False
+        self._invalidate_preview()
+        self.old_preview.clear()
+        self.new_preview.clear()
+        self._refresh_preview_for_state()
+
+    def _engine_action_clicked(self) -> None:
+        if self._busy:
+            return
+        issue = self._engine_action_issue()
+        if issue:
+            self._transfer_requested = False
+            self.update_plan = None
+            self.apply_button.setEnabled(False)
+            self.new_preview.setPlainText("Перенос недоступен.\n" + issue)
+            self.status_label.setText(
+                "Перенос недоступен — причина указана в предварительном просмотре"
+            )
+            return
+        if not self.source_editor.toPlainText().strip():
+            self._transfer_requested = True
+        self._invalidate_preview()
+        self.new_preview.clear()
+        self._refresh_preview_for_state()
+
+    def _refresh_router_engines_after_update(self, successful: bool = True) -> None:
+        client = self._connected_client
+        if client is None:
+            return
+
+        def action() -> RouterInfo:
+            self._active_client = client
+            return inspect_router(
+                client, self.settings.config_path, self.settings.service_name
+            )
+
+        def finished(result: object) -> None:
+            self._router_info = result
+            self._transfer_requested = False
+            self._sync_engine_controls()
+            if successful:
+                self._check_ruantiblock_after_update()
+            if not successful or not self.source_editor.toPlainText().strip():
+                self._refresh_preview_for_state()
+
+        self._run_worker(
+            action,
+            finished,
+            "Проверяю состояние движков…",
+            retry=lambda: self._refresh_router_engines_after_update(successful),
+            cancellable=True,
+        )
+
     def _refresh_preview_for_state(self) -> None:
         if self._connected_client is None or self._busy:
             return
-        if self.source_editor.toPlainText().strip():
+        self._sync_engine_controls()
+        if self._router_info is not None:
+            engines = self._router_info.available_engines
+            engine = next((e for e in engines if e.name == self._target_engine), None)
+            if engine is None or engine.issue:
+                self.update_plan = None
+                self.apply_button.setEnabled(False)
+                message = (
+                    engine.issue
+                    if engine
+                    else "На роутере не установлены sing-box и Xray. Установите и настройте один из движков через пакеты OpenWrt."
+                )
+                self.old_preview.setPlainText(message)
+                self.new_preview.setPlainText(
+                    "Перенос и обновление недоступны. Сначала устраните причину, указанную слева, и переподключитесь к роутеру."
+                )
+                self.status_label.setText(
+                    "Обновление недоступно — причина указана в предварительном просмотре"
+                )
+                return
+        if self.source_editor.toPlainText().strip() or self._transfer_requested:
             self._prepare_preview_if_ready()
         else:
             self._load_current_router_preview()
@@ -907,12 +1173,26 @@ class MainWindow(QMainWindow):
         if client is None or self._busy:
             return
 
+        engine = (
+            next(
+                (
+                    e
+                    for e in self._router_info.available_engines
+                    if e.name == self._target_engine
+                ),
+                None,
+            )
+            if self._router_info
+            else None
+        )
+
         def action() -> dict[str, Any]:
             self.operation_progress.emit("Читаю текущий outbound роутера…")
             self._active_client = client
             return read_router_outbound_summary(
                 client,
-                config_path=self.settings.config_path,
+                config_path=engine.config_path if engine else self.settings.config_path,
+                engine=engine.name if engine else "sing-box",
             )
 
         self._run_worker(
@@ -927,18 +1207,33 @@ class MainWindow(QMainWindow):
         if not isinstance(result, dict):
             raise TypeError("Некорректный текущий outbound роутера")
         self.update_plan = None
+        self._show_preview_warnings(())
         self.old_preview.setPlainText(json.dumps(result, ensure_ascii=False, indent=2))
         self.new_preview.clear()
         self.apply_button.setEnabled(False)
-        self.status_label.setText(
-            "Текущий outbound загружен — добавьте исходный конфиг"
-        )
+        if result == {"outbounds": []}:
+            self.status_label.setText(
+                "Сервер ещё не задан — импортируйте конфиг или перенесите сервер"
+            )
+        else:
+            self.status_label.setText(
+                "Текущий сервер загружен — добавьте исходный конфиг"
+            )
         self._append_log("Текущий outbound роутера загружен.")
 
     def _prepare_preview_if_ready(self) -> None:
         if self._connected_client is None or self._busy:
             return
-        if not self.source_editor.toPlainText().strip():
+        if self._router_info is not None and not any(
+            e.name == self._target_engine and not e.issue
+            for e in self._router_info.available_engines
+        ):
+            self._refresh_preview_for_state()
+            return
+        if (
+            not self.source_editor.toPlainText().strip()
+            and not self._transfer_requested
+        ):
             return
         self._prepare_preview()
 
@@ -946,13 +1241,19 @@ class MainWindow(QMainWindow):
         client = self._connected_client
         if client is None:
             return
-        if not self._validate_fields(require_source=True):
+        if not self._validate_fields(require_source=not self._transfer_requested):
             return
         imported_text = self.source_editor.toPlainText()
+        info, target = self._router_info, self._target_engine
+        both, transfer = self.engine_action.isChecked(), self._transfer_requested
 
-        def action() -> RouterUpdatePlan:
+        def action() -> RouterUpdatePlan | EngineUpdatePlan:
             self.operation_progress.emit("Читаю текущий конфиг роутера…")
             self._active_client = client
+            if info is not None:
+                return prepare_engine_update(
+                    imported_text, client, info, target, both, transfer
+                )
             return prepare_router_update(
                 imported_text,
                 client,
@@ -968,15 +1269,39 @@ class MainWindow(QMainWindow):
         )
 
     def _preview_finished(self, result: object) -> None:
-        if not isinstance(result, RouterUpdatePlan):
+        if not isinstance(result, (RouterUpdatePlan, EngineUpdatePlan)):
             raise TypeError("Некорректный результат подготовки превью")
         self.update_plan = result if result.has_changes else None
-        self._show_import_warnings(result.warnings)
+        primary = result.primary if isinstance(result, EngineUpdatePlan) else result
+        warnings = primary.warnings
+        preview = primary.preview
+        if isinstance(result, EngineUpdatePlan):
+            if result.secondary_error:
+                warnings = (*warnings, result.secondary_error)
+            if result.secondary:
+                warnings = (*warnings, *result.secondary.warnings)
+                preview = {
+                    key: {
+                        primary.engine: primary.preview[key],
+                        result.secondary.engine: result.secondary.preview[key],
+                    }
+                    for key in ("old_outbound", "new_outbound")
+                }
+            if result.switches_engine:
+                warnings = (
+                    *warnings,
+                    f"После применения будет работать {result.engine.name}; прежняя служба будет остановлена.",
+                )
+        self._show_preview_warnings(
+            tuple(
+                warning for warning in warnings if warning not in self._source_warnings
+            )
+        )
         self.old_preview.setPlainText(
-            json.dumps(result.preview["old_outbound"], ensure_ascii=False, indent=2)
+            json.dumps(preview["old_outbound"], ensure_ascii=False, indent=2)
         )
         self.new_preview.setPlainText(
-            json.dumps(result.preview["new_outbound"], ensure_ascii=False, indent=2)
+            json.dumps(preview["new_outbound"], ensure_ascii=False, indent=2)
         )
         self.apply_button.setEnabled(result.has_changes)
         if result.has_changes:
@@ -994,7 +1319,7 @@ class MainWindow(QMainWindow):
             self,
             "Подтверждение обновления",
             "Новый конфиг пройдёт проверку, затем будет создана временная "
-            "резервная копия и перезапущен sing-box. После успешной проверки "
+            "резервная копия и запущен выбранный движок. После успешной проверки "
             "копия удалится; при ошибке выполнится откат.\n\n"
             "Продолжить?",
             QMessageBox.StandardButton.No,
@@ -1008,6 +1333,10 @@ class MainWindow(QMainWindow):
         def action() -> RouterUpdateResult:
             self.operation_progress.emit("Начинаю безопасное обновление роутера…")
             self._active_client = client
+            if isinstance(plan, EngineUpdatePlan):
+                return apply_engine_update(
+                    plan, client, self.settings.config_path, self.settings.service_name
+                )
             return apply_router_update(
                 plan,
                 client,
@@ -1040,7 +1369,7 @@ class MainWindow(QMainWindow):
             self.update_plan = None
             self.old_preview.clear()
             self.new_preview.clear()
-            if result.backup_path and not result.backup_deleted:
+            if result.partial or (result.backup_path and not result.backup_deleted):
                 self.show_log_check.setChecked(True)
                 QMessageBox.warning(
                     self,
@@ -1049,14 +1378,21 @@ class MainWindow(QMainWindow):
                 )
             else:
                 QMessageBox.information(self, "Готово", result.message)
-            self._check_ruantiblock_after_update()
+            if isinstance(self._router_info, RouterInfo):
+                self._refresh_router_engines_after_update()
+            else:
+                self._check_ruantiblock_after_update()
         else:
             self.show_log_check.setChecked(True)
             QMessageBox.warning(
                 self,
-                "Обновление не выполнено",
+                "Обновление выполнено частично"
+                if result.partial
+                else "Обновление не выполнено",
                 _result_details(result),
             )
+            if self._router_info is not None:
+                self._refresh_router_engines_after_update(successful=False)
 
     def _check_ruantiblock_after_update(self) -> None:
         client = self._connected_client
@@ -1283,12 +1619,14 @@ class MainWindow(QMainWindow):
 
     def _set_log_visible(self, visible: bool) -> None:
         self.log_edit.setVisible(visible)
+        self._update_layout_minimum()
 
     def _set_busy(self, busy: bool, status: str | None = None) -> None:
         self._busy = busy
         if busy:
             self.drop_hint.hide()
         self.source_group.setEnabled(not busy)
+        self.engine_controls.setEnabled(not busy)
         self.connection_group.setEnabled(not busy)
         self.advanced_button.setEnabled(not busy)
         self.app_update_button.setEnabled(not busy)
@@ -1646,5 +1984,7 @@ def _result_details(result: RouterUpdateResult) -> str:
             or result.validation_result.stdout.strip()
         )
         if output:
-            details.append(f"Проверка sing-box: {output}")
+            details.append(
+                "Проверка конфигурации завершилась ошибкой. Подробный вывод скрыт: он может содержать секреты."
+            )
     return "\n\n".join(details)
