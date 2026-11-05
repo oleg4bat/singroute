@@ -1605,6 +1605,41 @@ def test_successful_update_clears_stale_preview_and_rechecks_router(
     app.processEvents()
 
 
+def test_failed_validation_displays_both_engine_streams_in_log(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
+    )
+    messages = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: messages.append(args[-1]))
+    result = RouterUpdateResult(
+        success=False,
+        backup_path=None,
+        validation_result=CommandResult(
+            "xray run -test",
+            23,
+            stdout="Xray 26.10.21",
+            stderr="unsupported config file extension: /tmp/config.new; id=***",
+        ),
+        message="Конфиг не прошёл проверку.",
+    )
+    window._update_finished(result)
+    log = window.log_edit.toPlainText()
+    for text in (
+        "код 23",
+        "Xray 26.10.21",
+        "unsupported config file extension",
+        "id=***",
+    ):
+        assert text in log
+        assert text in messages[0]
+    assert "вывод скрыт" not in log
+    assert window.status_label.text() == result.message
+    assert window.show_log_check.isChecked()
+    window.deleteLater()
+    app.processEvents()
+
+
 def test_rechecked_equal_preview_shows_current_data_without_enabling_update(
     tmp_path: Path,
 ):

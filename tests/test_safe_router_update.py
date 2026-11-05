@@ -142,6 +142,30 @@ def test_validation_failure_keeps_current_config_and_removes_private_files():
     assert not any("sha256sum" in call[-1] for call in client.calls if call[0] == "run")
 
 
+def test_validation_result_masks_both_configs_in_both_output_streams():
+    command = f"sing-box check -c {PATHS.temporary_path}"
+    original = json.loads(_router_config_text())
+    original["outbounds"][0]["password"] = "old-secret"
+    client = SafeFakeRouterClient(files={CONFIG_PATH: json.dumps(original)})
+    plan = prepare_router_update(_imported_config_text(), client)
+    old = json.loads(plan.original_config_text)["outbounds"][0]["password"]
+    new = json.loads(plan.updated_config_text)["outbounds"][0]["password"]
+    client.command_results[command] = CommandResult(
+        command,
+        23,
+        stdout=f"invalid password: {new}",
+        stderr=f"unsupported config file extension: /tmp/config.new; password={old}",
+    )
+    result = _apply(plan, client)
+    assert not result.success
+    assert result.validation_result.exit_code == 23
+    assert result.validation_result.stdout == "invalid password: ***"
+    assert result.validation_result.stderr == (
+        "unsupported config file extension: /tmp/config.new; password=***"
+    )
+    assert client.files[CONFIG_PATH] == plan.original_config_text
+
+
 def test_config_changed_after_preview_aborts_before_private_directory():
     client = SafeFakeRouterClient(files={CONFIG_PATH: _router_config_text()})
     plan = prepare_router_update(_imported_config_text(), client)

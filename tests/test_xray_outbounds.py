@@ -9,6 +9,7 @@ from test_auto_outbounds import UUID, xray_server
 
 from singroute.application.operation import (
     prepare_config_update,
+    summarize_router_outbound,
     validate_imported_config,
 )
 from singroute.core.converters.xray import to_xray
@@ -80,6 +81,88 @@ def xray_router():
         "outbounds": [],
         "routing": {"domainStrategy": "AsIs"},
     }
+
+
+@pytest.mark.parametrize("engine", ["sing-box", "xray"])
+def test_flat_happ_export_with_metrics_imports_only_server(engine):
+    source = json.loads(
+        (Path(__file__).parent / "fixtures/source_happ_vless_metrics.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    before = deepcopy(source)
+    selection = validate_imported_config(json.dumps(source), engine)
+    assert len(selection.servers) == 1
+    server = selection.servers[0]
+    if engine == "sing-box":
+        assert server["uuid"] == UUID
+        assert server["server"] == "server.example.test"
+    else:
+        assert server == source["outbounds"][0]
+    router = (
+        xray_router()
+        if engine == "xray"
+        else {"outbounds": [{"type": "direct", "tag": "router-proxy"}]}
+    )
+    result = prepare_config_update(json.dumps(source), json.dumps(router), engine)
+    assert len(result.updated_config["outbounds"]) == 1
+    for section in ("dns", "inbounds", "metrics", "stats", "policy", "routing"):
+        assert result.updated_config.get(section) == router.get(section)
+    assert UUID not in json.dumps(result.preview)
+    assert source == before
+
+
+@pytest.mark.parametrize("service", ["metrics", "api"])
+@pytest.mark.parametrize("scoped_proxy", [False, True])
+def test_router_service_routes_preserve_internal_exit_and_select_proxy(
+    service, scoped_proxy
+):
+    router = xray_router()
+    router["outbounds"] = [xray_server("active")]
+    router[service] = {"tag": "internal-exit"}
+    router["routing"]["rules"] = [
+        {"inboundTag": ["internal-in"], "outboundTag": "internal-exit"}
+    ]
+    if scoped_proxy:
+        router["routing"]["rules"].append(
+            {"inboundTag": ["tproxy-in"], "outboundTag": "active"}
+        )
+    before = deepcopy(router)
+    summary = summarize_router_outbound(json.dumps(router), "xray")
+    assert summary["tag"] == "active"
+    result = update({"outbounds": [xray_server("new", port=8443)]}, router)
+    assert result.updated_config["outbounds"][0]["tag"] == "active"
+    assert result.updated_config["routing"] == router["routing"]
+    assert result.updated_config[service] == router[service]
+    assert router == before
+
+
+@pytest.mark.parametrize("tags", [["missing"], ["active", "other"]])
+def test_unresolved_or_ambiguous_proxy_routes_are_still_rejected(tags):
+    router = xray_router()
+    router["outbounds"] = [xray_server("active"), xray_server("other")]
+    router["metrics"] = {"tag": "metrics_out"}
+    router["routing"]["rules"] = [
+        {"inboundTag": ["metrics_in"], "outboundTag": "metrics_out"},
+        *({"inboundTag": [f"client-{tag}"], "outboundTag": tag} for tag in tags),
+    ]
+    with pytest.raises(ConfigPatchError, match="неоднозначен"):
+        summarize_router_outbound(json.dumps(router), "xray")
+
+
+def test_metrics_route_does_not_hide_empty_router_proxy_slot():
+    router = xray_router()
+    router["outbounds"] = [{"protocol": "freedom", "tag": "direct"}]
+    router["metrics"] = {"tag": "metrics_out"}
+    router["routing"]["rules"] = [
+        {"inboundTag": ["metrics_in"], "outboundTag": "metrics_out"}
+    ]
+    assert summarize_router_outbound(json.dumps(router), "xray") == {"outbounds": []}
+    result = update({"outbounds": [xray_server("new")]}, router)
+    assert result.updated_config["outbounds"][0]["protocol"] == "vless"
+    assert result.updated_config["outbounds"][1:] == router["outbounds"]
+    assert result.updated_config["routing"] == router["routing"]
+    assert result.updated_config["metrics"] == router["metrics"]
 
 
 def update(source, router=None):

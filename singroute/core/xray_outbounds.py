@@ -253,11 +253,7 @@ def select_xray_source(config: dict[str, Any]) -> XraySelection:
     rules = routing.get("rules", [])
     if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
         raise ConfigPatchError("Некорректные правила Xray.")
-    default_tags = {
-        r["outboundTag"]
-        for r in rules
-        if isinstance(r.get("outboundTag"), str) and _default_rule(r)
-    }
+    default_tags = _primary_outbound_tags(config, rules)
     if len(default_tags) > 1:
         raise ConfigPatchError("Основной выход Xray неоднозначен.")
     if default_tags:
@@ -289,6 +285,27 @@ def _default_rule(rule: dict[str, Any]) -> bool:
     )
 
 
+def _primary_outbound_tags(
+    config: dict[str, Any], rules: list[dict[str, Any]]
+) -> set[str]:
+    # Xray creates these internal exits itself; they are absent from outbounds
+    # and route statistics/API traffic rather than proxy connections.
+    service_tags = {
+        section["tag"]
+        for key in ("metrics", "api")
+        if isinstance(section := config.get(key), dict)
+        and isinstance(section.get("tag"), str)
+        and section["tag"]
+    }
+    return {
+        rule["outboundTag"]
+        for rule in rules
+        if isinstance(rule.get("outboundTag"), str)
+        and rule["outboundTag"] not in service_tags
+        and _default_rule(rule)
+    }
+
+
 def current_xray_selection(config: dict[str, Any]) -> XraySelection | None:
     if not isinstance(config, dict) or not isinstance(config.get("outbounds"), list):
         raise ConfigPatchError("Некорректный конфиг Xray на роутере.")
@@ -307,9 +324,7 @@ def current_xray_selection(config: dict[str, Any]) -> XraySelection | None:
     rules = routing.get("rules", [])
     if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
         raise ConfigPatchError("Некорректные правила Xray на роутере.")
-    if not routing.get("balancers") and not any(
-        _default_rule(r) and r.get("outboundTag") for r in rules
-    ):
+    if not routing.get("balancers") and not _primary_outbound_tags(config, rules):
         first = config["outbounds"][0]
         if isinstance(first.get("protocol"), str) and first.get("protocol") in {
             "freedom",

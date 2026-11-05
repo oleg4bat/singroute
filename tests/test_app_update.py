@@ -403,7 +403,9 @@ def test_installer_retries_until_locked_target_can_be_replaced(
         "@echo off\n"
         '<nul set /p "=%SINGROUTE_UPDATE_HEALTH_TOKEN%" '
         '> "%SINGROUTE_UPDATE_HEALTH_PATH%"\n'
-        "ping 127.0.0.1 -n 8 > nul\n",
+        # Keep the replacement alive without requiring loopback ICMP access.
+        f'"{powershell}" -NoLogo -NoProfile -NonInteractive '
+        '-Command "Start-Sleep -Seconds 8"\n',
         encoding="ascii",
     )
     target.write_text("@echo off\nexit /b 0\n", encoding="ascii")

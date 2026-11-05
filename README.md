@@ -24,6 +24,8 @@ and Xray configurations into either engine on an OpenWrt router.
    private keys. Fields use a consistent, documentation-style order in the
    preview and the replaced outbound.
 5. Validates a temporary configuration with `sing-box check` or `xray run -test -format json`.
+   Validation failures include the engine's output and exit code in the log;
+   known credentials from both configurations are masked.
 6. Creates a temporary backup on the router after validation succeeds.
 7. Installs the configuration atomically and restarts the OpenWrt service.
 8. Verifies the service and automatically rolls back on failure.
@@ -73,6 +75,9 @@ are rejected. A sing-box group becomes Xray leastPing with a visible warning.
 For a sing-box target, group imports replace the current exit completely; providers are never combined.
 Version 0.11.0 adds Xray configuration import, native Xray group migration,
 and dual-engine update support.
+Version 0.11.1 fixes configuration validation with Xray 26.10+ and imports
+Happ exports with internal metrics/API routes without treating them as proxy
+servers. Validation errors remain visible with credentials masked.
 For Xray JSON, SingRoute identifies the primary balancer through routing rules,
 excludes loopback fallback tiers from primary-group selection, and matches its server tag prefixes. Native Xray imports retain reachable fallback groups,
 their internal loopback routes, final fallback server, and monitoring settings.

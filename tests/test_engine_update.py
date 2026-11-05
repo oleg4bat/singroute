@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 from test_auto_outbounds import UUID, xray_server
@@ -363,6 +364,72 @@ def test_gui_one_control_reacts_to_import_and_refreshes_both_previews(
     assert window.apply_button.isEnabled()
     window._set_busy(True)
     assert not window.engine_controls.isEnabled()
+    window.deleteLater()
+    app.processEvents()
+
+
+@pytest.mark.parametrize("initial_engine", ["sing-box", "xray"])
+def test_clipboard_metrics_export_survives_repeated_engine_changes(
+    tmp_path, monkeypatch, initial_engine
+):
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from test_gui_worker import FakeCredentialStore
+
+    from singroute.gui.main_window import MainWindow
+    from singroute.infrastructure.settings import PortableSettingsStore
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
+    )
+    client = PreviewRouter()
+    # Also exercise reading an existing router config with an internal exit.
+    router = json.loads(client.files["/etc/xray/config.json"])
+    router["metrics"] = {"tag": "router-metrics-out"}
+    router["routing"]["rules"] = [
+        {"inboundTag": ["router-metrics-in"], "outboundTag": "router-metrics-out"}
+    ]
+    client.files["/etc/xray/config.json"] = json.dumps(router)
+    original = deepcopy(client.files)
+    window._connected_client = client
+    window._router_info = inspect_router(
+        client, "/etc/sing-box/config.json", "sing-box"
+    )
+    window._target_engine = initial_engine
+    monkeypatch.setattr(
+        window,
+        "_run_worker",
+        lambda action, finished, *_args, **_kwargs: finished(action()),
+    )
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *_args: messages.append(_args[-1])
+    )
+    window._refresh_preview_for_state()
+    source = (
+        Path(__file__).parent / "fixtures/source_happ_vless_metrics.json"
+    ).read_text(encoding="utf-8")
+    app.clipboard().setText(source)
+    window.paste_button.click()
+    assert window.source_editor.toPlainText() == source
+    assert window.update_plan.primary.engine == initial_engine
+    # Match the reported sing-box -> Xray -> sing-box sequence in one session.
+    for radio, engine in [
+        (window.singbox_radio, "sing-box"),
+        (window.xray_radio, "xray"),
+        (window.singbox_radio, "sing-box"),
+        (window.xray_radio, "xray"),
+    ]:
+        radio.setChecked(True)
+        assert window.update_plan.primary.engine == engine
+        assert window.apply_button.isEnabled()
+        assert window.old_preview.toPlainText()
+        assert window.new_preview.toPlainText()
+        assert UUID not in window.log_edit.toPlainText()
+    assert not messages
+    assert client.files == original
+    app.clipboard().clear()
+    window._connected_client = None
     window.deleteLater()
     app.processEvents()
 

@@ -23,6 +23,7 @@ from singroute.application.router_service import (
     service_running_state,
     wait_for_service_state,
 )
+from singroute.core.diagnostics import redact_config_output
 
 DEFAULT_CONFIG_PATH = "/etc/sing-box/config.json"
 DEFAULT_SERVICE_NAME = "sing-box"
@@ -169,6 +170,16 @@ def apply_router_update(
         validation_result = router_client.run(
             f"{check_command} {shlex.quote(paths.temporary_path)}"
         )
+        configs = (
+            json.loads(plan.original_config_text),
+            json.loads(plan.updated_config_text),
+        )
+        validation_result = CommandResult(
+            command=validation_result.command,
+            exit_code=validation_result.exit_code,
+            stdout=redact_config_output(validation_result.stdout, *configs),
+            stderr=redact_config_output(validation_result.stderr, *configs),
+        )
         if validation_result.exit_code != 0:
             _cleanup_operation_directory(router_client, paths)
             operation_directory_created = False
@@ -286,7 +297,8 @@ def _build_update_paths(
     )
     return _UpdatePaths(
         operation_directory=operation_directory,
-        temporary_path=posixpath.join(operation_directory, "config.new"),
+        # Xray 26.10+ selects its loader from the extension even with -format json.
+        temporary_path=posixpath.join(operation_directory, "config.new.json"),
         backup_path=posixpath.join(operation_directory, "config.backup"),
         install_path=posixpath.join(operation_directory, "config.install"),
         restore_path=posixpath.join(operation_directory, "config.restore"),

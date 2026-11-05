@@ -1361,6 +1361,8 @@ class MainWindow(QMainWindow):
         self._append_log(result.message)
         if result.details:
             self._append_log(result.details)
+        if validation_details := _validation_details(result):
+            self._append_log(validation_details)
         if result.backup_path and not result.backup_deleted:
             self._append_log(f"Резервная копия оставлена: {result.backup_path}")
         self.status_label.setText(result.message)
@@ -1978,13 +1980,18 @@ def _result_details(result: RouterUpdateResult) -> str:
         details.append(result.details)
     if result.backup_path and not result.backup_deleted:
         details.append(f"Резервная копия оставлена: {result.backup_path}")
-    if result.validation_result.exit_code != 0:
-        output = (
-            result.validation_result.stderr.strip()
-            or result.validation_result.stdout.strip()
-        )
-        if output:
-            details.append(
-                "Проверка конфигурации завершилась ошибкой. Подробный вывод скрыт: он может содержать секреты."
-            )
+    if validation_details := _validation_details(result):
+        details.append(validation_details)
     return "\n\n".join(details)
+
+
+def _validation_details(result: RouterUpdateResult) -> str:
+    checked = result.validation_result
+    if checked.exit_code == 0:
+        return ""
+    streams = [
+        f"{name}:\n{output.strip()}"
+        for name, output in (("stdout", checked.stdout), ("stderr", checked.stderr))
+        if output.strip()
+    ]
+    return f"Проверка конфигурации: код {checked.exit_code}.\n" + "\n".join(streams)

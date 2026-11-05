@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -28,11 +29,94 @@ from singroute.application.operation import (
 from singroute.application.router_client import CommandResult
 from singroute.application.router_connection import inspect_router
 from singroute.application.router_update import (
+    _build_update_paths,
     apply_router_update,
     prepare_router_update,
 )
 from singroute.application.xray_service_config import XrayServiceConfig
 from singroute.core.converters.xray import to_xray
+
+
+def test_real_xray_failure_is_logged_without_echoed_credentials(tmp_path):
+    from test_safe_router_update import CONFIG_PATH, SafeFakeRouterClient, _apply
+
+    from singroute.gui.main_window import _result_details
+
+    binary = os.environ.get("XRAY_BINARY") or shutil.which("xray")
+    if not binary:
+        pytest.skip("Set XRAY_BINARY for real Xray validation")
+    secret = "invalid-secret-key"
+    server = xray_server("proxy")
+    server["streamSettings"].update(
+        security="reality",
+        realitySettings={
+            "publicKey": secret,
+            "serverName": "example.test",
+            "shortId": "0123456789abcdef",
+        },
+    )
+    raw_output = []
+
+    class RealValidationRouter(SafeFakeRouterClient):
+        def run(self, command):
+            if not command.startswith("xray run -test "):
+                return super().run(command)
+            args = shlex.split(command)
+            config = tmp_path / Path(args[-1]).name
+            config.write_text(self.files[args[-1]], encoding="utf-8")
+            checked = subprocess.run(
+                [binary, *args[1:-1], str(config)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            raw_output.append(checked.stdout + checked.stderr)
+            return CommandResult(
+                command, checked.returncode, checked.stdout, checked.stderr
+            )
+
+    router = RealValidationRouter(files={CONFIG_PATH: json.dumps({"outbounds": []})})
+    plan = prepare_router_update(
+        json.dumps({"outbounds": [server]}), router, CONFIG_PATH, "xray"
+    )
+    result = _apply(plan, router)
+    assert not result.success
+    assert secret in raw_output[0]
+    details = _result_details(result)
+    assert 'invalid "password"' in details
+    assert secret not in details
+    assert "***" in details
+    assert json.loads(router.files[CONFIG_PATH]) == {"outbounds": []}
+
+
+@pytest.mark.parametrize("engine", ["sing-box", "xray"])
+def test_flat_happ_metrics_import_passes_real_engine_check(tmp_path, engine):
+    binary = os.environ.get(
+        "XRAY_BINARY" if engine == "xray" else "SING_BOX_BINARY"
+    ) or shutil.which(engine)
+    if not binary:
+        pytest.skip(f"Set a binary for real {engine} validation")
+    source = (
+        Path(__file__).parent / "fixtures/source_happ_vless_metrics.json"
+    ).read_text(encoding="utf-8")
+    router = (
+        {"outbounds": []}
+        if engine == "xray"
+        else {"outbounds": [{"type": "direct", "tag": "proxy"}]}
+    )
+    update = prepare_config_update(source, json.dumps(router), engine)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(update.updated_config), encoding="utf-8")
+    args = ["run", "-test", "-config"] if engine == "xray" else ["check", "-c"]
+    checked = subprocess.run(
+        [binary, *args, str(config)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
 @pytest.mark.parametrize(
@@ -430,7 +514,10 @@ def test_anonymized_user_group_passes_real_xray_validation(tmp_path):
         encoding="utf-8"
     )
     updated = prepare_config_update(source, json.dumps(xray_router()), "xray")
-    config = tmp_path / "config.new"
+    # Exercise the production staging name: recent Xray versions reject .new
+    # even when the caller explicitly supplies -format json.
+    staged = _build_update_paths("/etc/xray/config.json", None, "a" * 32)
+    config = tmp_path / Path(staged.temporary_path).name
     config.write_text(json.dumps(updated.updated_config), encoding="utf-8")
     result = subprocess.run(
         [binary, "run", "-test", "-format", "json", "-config", str(config)],
