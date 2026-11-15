@@ -24,8 +24,6 @@ def test_missing_ini_returns_openwrt_defaults(tmp_path: Path):
     assert settings.host == "192.168.1.1"
     assert settings.port == 22
     assert settings.username == "root"
-    assert settings.config_path == "/etc/sing-box/config.json"
-    assert settings.service_name == "sing-box"
     assert settings.auth_mode == "auto"
     assert settings.remember_password is False
     assert settings.auto_connect is False
@@ -40,8 +38,6 @@ def test_settings_round_trip_to_portable_ini_without_password(tmp_path: Path):
         host="openwrt.lan",
         port=2222,
         username="admin",
-        config_path="/opt/sing-box/config.json",
-        service_name="sing-box-custom",
         auth_mode="key",
         identity_file="D:/keys/router_ed25519",
         remember_password=True,
@@ -60,6 +56,22 @@ def test_settings_round_trip_to_portable_ini_without_password(tmp_path: Path):
     assert actual == expected
     ini_text = path.read_text(encoding="utf-8")
     assert "password" not in ini_text.replace("remember_password", "")
+
+
+def test_legacy_manual_paths_and_service_are_ignored_and_removed_on_save(tmp_path):
+    path = tmp_path / "SingRoute.ini"
+    path.write_text(
+        "[connection]\nhost = router.test\nconfig_path = /old/sing-box.json\nxray_config_path = /old/xray.json\nservice_name = old-service\n",
+        encoding="utf-8",
+    )
+    store = PortableSettingsStore(path)
+    settings = store.load()
+    assert settings.host == "router.test"
+    for key in ("config_path", "xray_config_path", "service_name"):
+        assert not hasattr(settings, key)
+    store.save(settings)
+    text = path.read_text(encoding="utf-8")
+    assert "config_path" not in text and "service_name" not in text
 
 
 def test_invalid_ini_values_fall_back_to_safe_defaults(tmp_path: Path):

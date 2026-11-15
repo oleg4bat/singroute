@@ -19,6 +19,9 @@ and Xray configurations into either engine on an OpenWrt router.
    before loading. JSON or VLESS link text takes priority when the clipboard
    also contains links. Normal text paste still works in connection fields. One local
    file can also be dropped anywhere in the main window.
+   If a JSON object is accidentally copied several times in a row, verbatim
+   duplicates are imported once with a visible notice. Differing copies or
+   incomplete text are rejected; copy one complete config again.
 3. Converts a supported connection or primary server group for the selected engine.
 4. Shows the current and proposed outbound (including group members), masking passwords, UUIDs, and
    private keys. Fields use a consistent, documentation-style order in the
@@ -60,7 +63,11 @@ Updates to the two configurations are independent: after a safely rejected or
 rolled-back update, the other configuration can still be updated. An inactive
 engine is validated without starting it. Partial results are shown explicitly;
 ambiguous recovery stops further changes. No installed engines produces a message
-in the preview. Package installation and initial traffic interception are manual.
+in the preview. SSH remains connected when either engine, both engines, or their
+configs are missing. Install and configure `sing-box` or `xray-core` in OpenWrt,
+then reconnect. A file read failure disables updates and explains what to check
+without treating it as a lost SSH connection. Package installation and initial
+traffic interception are manual.
 
 For an Xray target, native server settings (including XHTTP) are preserved, and
 the primary group's balancer strategy, fallback server, and observatory settings
@@ -201,27 +208,40 @@ Default connection settings:
 - router: `192.168.1.1`;
 - SSH user: `root`;
 - SSH port: `22`;
-- configuration: `/etc/sing-box/config.json`;
-- service: `/etc/init.d/sing-box`.
+- configuration paths: automatic.
 
-The OpenWrt `xray-core` package uses `/etc/init.d/xray`. SingRoute reads and updates
-only `/etc/xray/config.json`, regardless of examples or other JSON files nearby.
-When applying to Xray, the service is configured to load only this primary file
-if its `conffiles` or `confdir` settings differ. This change is announced in the
-preview; other files remain untouched. Service settings are staged in a private
-UCI copy and replaced only if the original settings still match the preview.
-An absent `confdir` option is a valid disabled directory (UCI get returns 1).
-Failed activation restores the previous settings and JSON. Pending UCI edits
-are preserved and prevent changing service settings. The package's
-`enabled.enabled` flag is enabled when activating Xray and restored on rollback.
-Its configured asset directory is also used for validation. A missing primary
-file or unconfigured service is explained in the preview. A single JSON file
-can contain one server or an automatic group of servers.
+SingRoute discovers the standard OpenWrt services `/etc/init.d/sing-box` and
+`/etc/init.d/xray`. For a running service, procd supplies its actual command and
+config file; for a stopped service, the path comes from UCI
+`sing-box.main.conffile` or `xray.config.conffiles`. Paths must agree with the
+service's restart settings. A missing or ambiguous path, multiple files, or a
+config directory blocks replacement with an explanation. No standard path is
+guessed, and file selection in OpenWrt is never rewritten. Configure the service
+on the router to use one JSON file, then reconnect. One file can contain a server
+or an automatic group of servers. After restart, SingRoute verifies that the
+service is running with the file that was updated.
+
+Discovery runs once per SSH connection. Service and UCI queries are batched;
+before applying, only current service states are refreshed. After a confirmed
+update, the interface uses the verified result without another full router scan
+or preview download. An uncertain recovery requires reconnecting. Temporary
+files are cleaned up together; validation, guarded replacement, and rollback
+are preserved.
+The config is read for the preview. Immediately before replacement, its hash
+is compared on the router with the preview snapshot; another preliminary
+download or separate file-readability probe is not needed.
+
+When activating disabled Xray, only its package `enabled.enabled` flag changes.
+This is staged in a private UCI copy, guarded against concurrent and pending UCI
+edits, and restored on rollback. Its configured asset directory is used for
+validation. Other service settings remain unchanged.
 
 The main connection row contains the address, user, password, and password
 storage option. The eye button in the password field temporarily reveals or
-hides the entered password. SSH port, authentication mode, private key,
-configuration path, and service name are available under advanced settings.
+hides the entered password. SSH port, authentication mode, and private key are
+available under advanced settings. Configuration paths and service names have
+no user settings, command arguments, or INI overrides. Legacy values in older
+INI files are ignored and removed on the next save.
 
 ## SSH and safety
 
@@ -230,6 +250,12 @@ Automatic authentication tries SSH agent keys, standard keys from
 entered password. A custom private key can be selected without copying it.
 This is the user's private authentication key and remains on Windows; it is not
 the router host key described below.
+
+When no password is entered or stored in Windows, automatic and password modes
+also support routers that permit SSH login without authentication or with an
+empty password. Leave the password field empty; disable password storage if an
+old password is still saved. Key-only mode still requires an SSH key, and router
+host key confirmation is required for passwordless login too.
 
 Passwords and key passphrases are never written to the INI file. With password
 storage enabled, the password is kept in Windows Credential Manager and scoped
@@ -275,6 +301,24 @@ set `SING_BOX_BINARY` to a sing-box executable before running pytest. These test
 use anonymized data and loopback connections, verify SNI, Host, path, certificate
 validation and early data, and never connect to a real router or proxy server.
 They are skipped when the binary is unavailable.
+
+Connection tests use loopback SSH and bash without requiring engine binaries:
+they cover passwordless login, missing engines/configs, and service-selected paths.
+
+To use the pinned engines from CI in a PowerShell session:
+
+```powershell
+.\scripts\setup_test_engines.ps1
+$env:SINGROUTE_REQUIRE_ENGINES = "1"
+poetry run pytest -q
+```
+
+CI and release checks require both engines and bash; missing tools fail the run.
+The setup script replaces corrupt or outdated cached archives after verifying
+the download; incomplete downloads are never accepted into the cache.
+GUI integration tests exercise connection, file import and Apply through real
+workers and loopback SSH, including declining Apply, rollback, retry and an
+uncertain result. Concurrent configuration edits are tested with the real shell.
 
 Set `XRAY_BINARY` as well to exercise Xray conversion, native leastLoad selection,
 local VLESS traffic, atomic file replacement, service migration/rollback, partial

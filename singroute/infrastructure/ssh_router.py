@@ -16,7 +16,7 @@ from typing import Any
 
 import paramiko
 
-from singroute.application.router_client import CommandResult
+from singroute.application.router_client import CommandResult, RouterFileReadError
 
 
 class SshRouterError(RuntimeError):
@@ -109,19 +109,35 @@ class SshRouterClient:
         self._report(f"SSH: подключение к {self.user}@{self.host}:{self.port}")
         self._client = client
         try:
-            client.connect(
-                hostname=resolved_host,
-                port=self.port,
-                username=self.user,
-                password=(self.password or None) if use_password else None,
-                passphrase=(self.key_passphrase or None) if use_keys else None,
-                key_filename=(identity_files or None) if use_keys else None,
-                allow_agent=use_keys,
-                look_for_keys=use_keys,
-                timeout=self.timeout,
-                auth_timeout=self.timeout,
-                banner_timeout=self.timeout,
-            )
+            try:
+                client.connect(
+                    hostname=resolved_host,
+                    port=self.port,
+                    username=self.user,
+                    password=(self.password or None) if use_password else None,
+                    passphrase=(self.key_passphrase or None) if use_keys else None,
+                    key_filename=(identity_files or None) if use_keys else None,
+                    allow_agent=use_keys,
+                    look_for_keys=use_keys,
+                    timeout=self.timeout,
+                    auth_timeout=self.timeout,
+                    banner_timeout=self.timeout,
+                )
+            except paramiko.SSHException as error:
+                # SSHClient's legacy auth never tries "none". Fresh OpenWrt
+                # can allow it before a root password is set. Reuse the same
+                # transport, whose host key connect() has already verified.
+                if (
+                    not use_password
+                    or self.password
+                    or not (
+                        isinstance(error, paramiko.AuthenticationException)
+                        or str(error) == "No authentication methods available"
+                    )
+                ):
+                    raise
+                self._check_cancelled()
+                _authenticate_without_password(client, self.user)
         except (UnknownHostKeyError, HostKeyMismatchError):
             self.close()
             raise
@@ -135,6 +151,11 @@ class SshRouterClient:
             if self.cancel_event is not None and self.cancel_event.is_set():
                 raise SshOperationCancelled(
                     "Операция отменена пользователем."
+                ) from error
+            if isinstance(error, paramiko.AuthenticationException):
+                raise SshRouterError(
+                    "Не удалось пройти SSH-аутентификацию. "
+                    "Проверьте пользователя, пароль или SSH-ключ."
                 ) from error
             raise SshRouterError(
                 f"Не удалось подключиться к {self.user}@{self.host}:{self.port}: {error}"
@@ -165,8 +186,7 @@ class SshRouterClient:
     def read_text(self, path: str) -> str:
         result = self.run(f"cat {shlex.quote(path)}")
         if result.exit_code not in {0, -1}:
-            message = result.stderr.strip() or result.stdout.strip() or "без описания"
-            raise SshRouterError(f"Не удалось прочитать {path}: {message}")
+            raise RouterFileReadError(path)
         if result.exit_code == -1 and result.stderr.strip():
             raise SshRouterError(
                 f"Не удалось прочитать {path}: {result.stderr.strip()}"
@@ -202,7 +222,12 @@ class SshRouterClient:
                 f"{self.max_input_bytes // (1024 * 1024)} МиБ."
             )
         client = self._connected_client()
-        self._report(f"SSH: {command}")
+        command_label = command.split("\n", 1)[0]
+        self._report(
+            f"SSH: {command_label[2:]}"
+            if command.startswith("# ")
+            else f"SSH: {command}"
+        )
         try:
             stdin, stdout, _stderr_stream = client.exec_command(
                 command,
@@ -307,6 +332,21 @@ class SshRouterClient:
     def _report(self, message: str) -> None:
         if self.progress_callback is not None:
             self.progress_callback(message)
+
+
+def _authenticate_without_password(client: paramiko.SSHClient, user: str) -> None:
+    transport = client.get_transport()
+    if transport is None or not transport.is_active():
+        raise paramiko.AuthenticationException("SSH transport is not active")
+    try:
+        transport.auth_none(user)
+    except paramiko.BadAuthenticationType as error:
+        if "password" not in error.allowed_types:
+            raise
+        # Some servers allow an empty password rather than SSH's "none".
+        transport.auth_password(user, "", fallback=False)
+    if not transport.is_authenticated():
+        raise paramiko.AuthenticationException("SSH authentication is incomplete")
 
 
 class _ExpectedHostKeyPolicy(paramiko.MissingHostKeyPolicy):

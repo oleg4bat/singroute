@@ -11,11 +11,6 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from singroute.application.router_update import (
-    DEFAULT_CONFIG_PATH,
-    DEFAULT_SERVICE_NAME,
-)
-
 SETTINGS_FILENAME = "SingRoute.ini"
 LEGACY_SETTINGS_FILENAME = "singbox-outbound-updater.ini"
 VALID_AUTH_MODES = {"auto", "key", "password"}
@@ -26,8 +21,6 @@ class AppSettings:
     host: str = "192.168.1.1"
     port: int = 22
     username: str = "root"
-    config_path: str = DEFAULT_CONFIG_PATH
-    service_name: str = DEFAULT_SERVICE_NAME
     auth_mode: str = "auto"
     identity_file: str = ""
     remember_password: bool = False
@@ -77,8 +70,6 @@ class PortableSettingsStore:
         settings.host = _text(connection, "host", settings.host)
         settings.port = _bounded_int(connection, "port", settings.port, 1, 65535)
         settings.username = _text(connection, "username", settings.username)
-        settings.config_path = _text(connection, "config_path", settings.config_path)
-        settings.service_name = _text(connection, "service_name", settings.service_name)
         auth_mode = _text(connection, "auth_mode", settings.auth_mode)
         settings.auth_mode = auth_mode if auth_mode in VALID_AUTH_MODES else "auto"
         settings.identity_file = _text(connection, "identity_file", "")
@@ -109,8 +100,6 @@ class PortableSettingsStore:
             "host": settings.host.strip(),
             "port": str(settings.port),
             "username": settings.username.strip(),
-            "config_path": settings.config_path.strip(),
-            "service_name": settings.service_name.strip(),
             "auth_mode": settings.auth_mode,
             "identity_file": settings.identity_file.strip(),
             "remember_password": str(settings.remember_password).lower(),

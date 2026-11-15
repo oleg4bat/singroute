@@ -4,6 +4,7 @@ import pytest
 
 from singroute.application.operation import (
     MAX_CONFIG_BYTES,
+    parse_imported_selection,
     prepare_config_update,
     summarize_router_outbound,
 )
@@ -218,6 +219,132 @@ def test_invalid_imported_json_retains_original_line_numbers():
         prepare_config_update('\n\n{"outbounds": [}', "{}")
 
 
+@pytest.mark.parametrize(
+    "engine,separator,copies",
+    [("sing-box", "", 2), ("xray", "", 2), ("sing-box", " ", 3), ("xray", "\r\n\t", 3)],
+)
+def test_imports_verbatim_repeated_json_once(engine, separator, copies):
+    source = json.dumps(
+        {
+            "outbounds": [
+                {
+                    "type": "vless",
+                    "tag": "proxy",
+                    "server": "vpn.test",
+                    "server_port": 443,
+                    "uuid": "11111111-1111-1111-1111-111111111111",
+                }
+            ],
+            "remarks": 'Скобки внутри строки: } {, кавычки: "',
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    expected = parse_imported_selection(source, engine)
+
+    selection = parse_imported_selection(
+        "\ufeff \n" + separator.join([source] * copies) + "\r\n", engine
+    )
+
+    assert selection.servers == expected.servers
+    assert len(selection.servers) == 1
+    assert selection.warnings == (
+        "Конфиг повторялся несколько раз. Импортирована одна копия.",
+    )
+    assert "11111111-1111-1111-1111-111111111111" not in str(selection.warnings)
+
+
+def test_repeated_json_preserves_group_import_warnings():
+    from config_samples import xray_group, xray_server
+
+    source = json.dumps(
+        xray_group(xray_server("proxy-good"), xray_server("proxy-bad", "xhttp"))
+    )
+    expected = parse_imported_selection(source)
+
+    selection = parse_imported_selection(source + " " + source)
+
+    assert selection.servers == expected.servers
+    assert selection.automatic is True
+    assert selection.names == expected.names
+    assert expected.warnings
+    assert selection.warnings[1:] == expected.warnings
+
+
+@pytest.mark.parametrize(
+    "tail,valid_copies",
+    [
+        ('{"outbounds": [{"type": "vless", "server": "other.test"}]}', 1),
+        ('{"outbounds": [', 2),
+        ("trailing text", 1),
+        ("[]", 1),
+        ("null", 1),
+        ("// comment", 1),
+        ('\ufeff{"outbounds": [{"type": "vless", "server": "vpn.test"}]}', 1),
+    ],
+)
+def test_repeated_json_never_discards_different_or_damaged_tail(tail, valid_copies):
+    source = '{"outbounds": [{"type": "vless", "server": "vpn.test"}]}'
+    content = "\n".join([source] * valid_copies + [tail])
+
+    with pytest.raises(ConfigParseError) as caught:
+        parse_imported_selection(content)
+
+    assert isinstance(caught.value.__cause__, json.JSONDecodeError)
+    assert caught.value.__cause__.lineno == 2
+    assert "vpn.test" not in str(caught.value)
+    assert "other.test" not in str(caught.value)
+
+
+def test_repeated_json_is_rejected_when_only_parsed_values_appear_equal():
+    source = '{"outbounds": [{"type": "vless"}], "setting": 1}'
+    changed = source.replace('"setting": 1', '"setting": true')
+    assert json.loads(source) == json.loads(changed)
+
+    with pytest.raises(ConfigParseError):
+        parse_imported_selection(source + changed)
+
+
+def test_repeated_json_keeps_import_size_limit(monkeypatch):
+    source = '{"outbounds": [{"type": "vless"}]}'
+    monkeypatch.setattr("singroute.application.operation.MAX_CONFIG_BYTES", len(source))
+
+    with pytest.raises(ConfigParseError, match="safe limit"):
+        parse_imported_selection(source + source)
+
+
+def test_repeated_json_keeps_import_depth_limit(monkeypatch):
+    source = '{"outbounds": [{"type": "vless"}]}'
+    monkeypatch.setattr("singroute.application.operation.MAX_JSON_DEPTH", 2)
+
+    with pytest.raises(ConfigParseError, match="nested"):
+        parse_imported_selection(source + source)
+
+
+def test_repeated_import_reaches_config_update_with_notice():
+    source = '{"outbounds": [{"type": "vless", "server": "vpn.test"}]}'
+    router = json.dumps({"outbounds": [{"type": "direct", "tag": "proxy"}]})
+
+    result = prepare_config_update(source + " " + source, router)
+
+    assert result.updated_config["outbounds"] == [
+        {"type": "vless", "tag": "proxy", "server": "vpn.test"}
+    ]
+    assert result.warnings == (
+        "Конфиг повторялся несколько раз. Импортирована одна копия.",
+    )
+
+
+def test_router_json_remains_strict_when_documents_repeat():
+    source = '{"outbounds": [{"type": "vless"}]}'
+    router = '{"outbounds": [{"type": "direct", "tag": "proxy"}]}'
+
+    with pytest.raises(ConfigParseError, match="current_router_config"):
+        prepare_config_update(source, router + router)
+    with pytest.raises(ConfigParseError, match="current_router_config"):
+        summarize_router_outbound(router + router)
+
+
 def test_prepare_config_update_wraps_invalid_router_json():
     with pytest.raises(
         ConfigParseError,
@@ -272,23 +399,11 @@ def test_prepare_config_update_uses_first_supported_exported_proxy():
     }
 
 
-def test_prepare_config_update_rejects_non_list_router_outbounds():
-    with pytest.raises(ConfigPatchError, match=r'router_config\["outbounds"\].*list'):
-        prepare_config_update(
-            json.dumps({"outbounds": [{"type": "vless", "server": "vpn.test"}]}),
-            json.dumps({"outbounds": {"type": "direct"}}),
-        )
-
-
 @pytest.mark.parametrize(
     "router_config",
     [
         {},
-        {"outbounds": []},
-        {"outbounds": ["not-an-object"]},
         {"outbounds": [{"type": "direct"}]},
-        {"outbounds": [{"type": "direct", "tag": ""}]},
-        {"outbounds": [{"type": "direct", "tag": 123}]},
     ],
 )
 def test_prepare_config_update_rejects_router_without_valid_active_outbound(

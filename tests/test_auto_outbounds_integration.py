@@ -7,54 +7,13 @@ import json
 import os
 import shutil
 import subprocess
-import threading
 import time
-from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from test_auto_outbounds import UUID, xray_group, xray_server
-from test_vless_ws_integration import _singbox_process, _unused_ports
+from config_samples import UUID, xray_group, xray_server
+from local_proxy import _singbox_process, _unused_ports, probe_target, proxy_request
 
 from singroute.application.operation import prepare_config_update
-
-
-@contextmanager
-def probe_target():
-    class Handler(BaseHTTPRequestHandler):
-        def do_HEAD(self):
-            self.send_response(204)
-            self.end_headers()
-
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Length", "7")
-            self.end_headers()
-            self.wfile.write(b"auto-ok")
-
-        def log_message(self, *_args):
-            pass
-
-    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
-        worker.start()
-        try:
-            yield server.server_port
-        finally:
-            server.shutdown()
-            worker.join(timeout=5)
-
-
-def proxy_request(proxy_port, target_port):
-    connection = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=2)
-    try:
-        connection.request("GET", f"http://127.0.0.1:{target_port}/traffic")
-        response = connection.getresponse()
-        return response.status == 200 and response.read() == b"auto-ok"
-    except (OSError, http.client.HTTPException):
-        return False
-    finally:
-        connection.close()
 
 
 def test_generated_group_selects_working_node_and_carries_real_traffic(tmp_path):

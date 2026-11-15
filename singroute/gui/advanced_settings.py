@@ -40,7 +40,8 @@ class AdvancedSettingsDialog(QDialog):
         self.auth_combo.setCurrentIndex(max(0, index))
 
         self.identity_edit = QLineEdit(settings.identity_file)
-        self.identity_edit.setPlaceholderText(
+        self.identity_edit.setPlaceholderText("Автоматический выбор")
+        self.identity_edit.setToolTip(
             "Пусто — SSH-agent, стандартные ключи и ~/.ssh/config"
         )
         browse_button = QPushButton("Выбрать…")
@@ -52,8 +53,6 @@ class AdvancedSettingsDialog(QDialog):
         identity_widget = QWidget()
         identity_widget.setLayout(identity_layout)
 
-        self.config_path_edit = QLineEdit(settings.config_path)
-        self.service_name_edit = QLineEdit(settings.service_name)
         self.check_updates_on_startup = QCheckBox(
             "Проверять обновления SingRoute при запуске"
         )
@@ -67,8 +66,6 @@ class AdvancedSettingsDialog(QDialog):
         form.addRow("SSH-порт", self.port_spin)
         form.addRow("Авторизация", self.auth_combo)
         form.addRow("Приватный SSH-ключ", identity_widget)
-        form.addRow("Конфиг sing-box", self.config_path_edit)
-        form.addRow("Служба sing-box", self.service_name_edit)
         form.addRow("Обновления", self.check_updates_on_startup)
         form.addRow("ruantiblock", self.offer_ruantiblock_start)
 
@@ -89,8 +86,6 @@ class AdvancedSettingsDialog(QDialog):
         settings.port = self.port_spin.value()
         settings.auth_mode = str(self.auth_combo.currentData())
         settings.identity_file = self.identity_edit.text().strip()
-        settings.config_path = self.config_path_edit.text().strip()
-        settings.service_name = self.service_name_edit.text().strip()
         settings.check_updates_on_startup = self.check_updates_on_startup.isChecked()
         settings.offer_ruantiblock_start = self.offer_ruantiblock_start.isChecked()
 

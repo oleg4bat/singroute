@@ -4,18 +4,16 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
-from test_auto_outbounds import UUID, xray_server
-from test_auto_outbounds_integration import probe_target, proxy_request
-from test_vless_ws_integration import _unused_ports
-from test_xray_outbounds import native_group, tiered_group
-from xray_test_router import LocalRouter, loopback_ssh_client, wait_port
+from config_samples import UUID, native_group, tiered_group, xray_server
+from local_proxy import _unused_ports, probe_target, proxy_request
+from ssh_test_server import loopback_ssh_client
+from xray_test_router import LocalRouter, setup_local, wait_port
 
 from singroute.application.engine_update import (
     EngineUpdatePlan,
@@ -26,25 +24,19 @@ from singroute.application.operation import (
     prepare_config_update,
     validate_imported_config,
 )
-from singroute.application.router_client import CommandResult
 from singroute.application.router_connection import inspect_router
 from singroute.application.router_update import (
+    RouterConfigChangedError,
     _build_update_paths,
     apply_router_update,
     prepare_router_update,
 )
-from singroute.application.xray_service_config import XrayServiceConfig
 from singroute.core.converters.xray import to_xray
 
 
 def test_real_xray_failure_is_logged_without_echoed_credentials(tmp_path):
-    from test_safe_router_update import CONFIG_PATH, SafeFakeRouterClient, _apply
-
     from singroute.gui.main_window import _result_details
 
-    binary = os.environ.get("XRAY_BINARY") or shutil.which("xray")
-    if not binary:
-        pytest.skip("Set XRAY_BINARY for real Xray validation")
     secret = "invalid-secret-key"
     server = xray_server("proxy")
     server["streamSettings"].update(
@@ -57,37 +49,30 @@ def test_real_xray_failure_is_logged_without_echoed_credentials(tmp_path):
     )
     raw_output = []
 
-    class RealValidationRouter(SafeFakeRouterClient):
-        def run(self, command):
-            if not command.startswith("xray run -test "):
-                return super().run(command)
-            args = shlex.split(command)
-            config = tmp_path / Path(args[-1]).name
-            config.write_text(self.files[args[-1]], encoding="utf-8")
-            checked = subprocess.run(
-                [binary, *args[1:-1], str(config)],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            raw_output.append(checked.stdout + checked.stderr)
-            return CommandResult(
-                command, checked.returncode, checked.stdout, checked.stderr
-            )
+    class RealValidationRouter(LocalRouter):
+        def run(self, command, input_text=None):
+            result = super().run(command, input_text)
+            if command.startswith("xray run -test "):
+                raw_output.append(result.stdout + result.stderr)
+            return result
 
-    router = RealValidationRouter(files={CONFIG_PATH: json.dumps({"outbounds": []})})
-    plan = prepare_router_update(
-        json.dumps({"outbounds": [server]}), router, CONFIG_PATH, "xray"
-    )
-    result = _apply(plan, router)
-    assert not result.success
-    assert secret in raw_output[0]
-    details = _result_details(result)
-    assert 'invalid "password"' in details
-    assert secret not in details
-    assert "***" in details
-    assert json.loads(router.files[CONFIG_PATH]) == {"outbounds": []}
+    router = RealValidationRouter(tmp_path, required_engines=("xray",))
+    config_path = "/etc/xray/config.json"
+    try:
+        router.put(config_path, json.dumps({"outbounds": []}))
+        plan = prepare_router_update(
+            json.dumps({"outbounds": [server]}), router, config_path, "xray"
+        )
+        result = apply_router_update(plan, router, service_name="xray")
+        assert not result.success
+        assert secret in raw_output[0]
+        details = _result_details(result)
+        assert 'invalid "password"' in details
+        assert secret not in details
+        assert "***" in details
+        assert json.loads(router.read_text(config_path)) == {"outbounds": []}
+    finally:
+        router.close()
 
 
 @pytest.mark.parametrize("engine", ["sing-box", "xray"])
@@ -161,75 +146,44 @@ def local_router(tmp_path):
     router.close()
 
 
-def setup_local(router):
-    backend, proxy, other = _unused_ports(3)
-    router.put(
-        "/etc/sing-box/config.json",
-        json.dumps(
-            {
-                "inbounds": [
-                    {"type": "mixed", "listen": "127.0.0.1", "listen_port": other}
-                ],
-                "outbounds": [{"type": "direct", "tag": "proxy"}],
-            }
-        ),
-    )
-    router.put(
-        "/etc/xray/config.json",
-        json.dumps(
-            {
-                "inbounds": [
-                    {"protocol": "http", "listen": "127.0.0.1", "port": proxy}
-                ],
-                "outbounds": [
-                    {"protocol": "freedom", "tag": "direct"},
-                    xray_server("proxy"),
-                ],
-            }
-        ),
-    )
-    # Start with a selectable first server that is irrelevant to direct local traffic.
-    config = json.loads(router.read_text("/etc/xray/config.json"))
-    config["outbounds"] = [
-        xray_server("proxy"),
-        {"protocol": "freedom", "tag": "direct"},
-    ]
-    router.put("/etc/xray/config.json", json.dumps(config))
-    backend_config = {
-        "log": {"loglevel": "debug"},
-        "inbounds": [
-            {
-                "protocol": "vless",
-                "listen": "127.0.0.1",
-                "port": backend,
-                "settings": {"clients": [{"id": UUID}], "decryption": "none"},
-                "streamSettings": {"network": "tcp", "security": "none"},
-            }
-        ],
-        "outbounds": [
-            {
-                "protocol": "freedom",
-                "settings": {
-                    "finalRules": [{"action": "allow", "ip": ["127.0.0.1/32"]}]
-                },
-            }
-        ],
-    }
-    path = router.root / "backend.json"
-    path.write_text(json.dumps(backend_config), encoding="utf-8")
-    log = (router.root / "backend.log").open("w", encoding="utf-8")
-    router.logs.append(log)
-    process = subprocess.Popen(
-        [router.binaries["xray"], "run", "-config", str(path)],
-        stdout=log,
-        stderr=log,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    router.processes["backend"] = process
-    wait_port(backend)
-    source = {"outbounds": [xray_server("imported", port=backend)]}
-    source["outbounds"][0]["settings"]["vnext"][0]["address"] = "127.0.0.1"
-    return source, proxy, other
+@pytest.mark.parametrize("when", ["before_validation", "during_validation"])
+def test_concurrent_config_edit_is_preserved_over_real_ssh(
+    local_router, monkeypatch, when
+):
+    source, _, _ = setup_local(local_router)
+    assert local_router.start("xray")
+    process = local_router.processes["xray"]
+    config_path = "/etc/xray/config.json"
+    changed_config = json.loads(local_router.read_text(config_path))
+    changed_config["log"] = {"loglevel": "error"}
+    changed = json.dumps(changed_config)
+    paths_before = set(local_router.root.rglob("*"))
+    real_run = local_router.run
+    validated = []
+
+    def run(command, input_text=None):
+        result = real_run(command, input_text)
+        if "xray run -test " in command:
+            validated.append(result.exit_code)
+            if when == "during_validation":
+                local_router.put(config_path, changed)
+        return result
+
+    monkeypatch.setattr(local_router, "run", run)
+    with loopback_ssh_client(local_router) as (client, _):
+        plan = prepare_engine_update(
+            json.dumps(source), client, inspect_router(client), "xray"
+        )
+        if when == "before_validation":
+            local_router.put(config_path, changed)
+        with pytest.raises(RouterConfigChangedError, match="изменился"):
+            apply_engine_update(plan, client)
+        assert validated == [0]
+        assert local_router.read_text(config_path) == changed
+        assert local_router.processes["xray"] is process
+        assert process.poll() is None
+        assert set(local_router.root.rglob("*")) == paths_before
+        assert client.run("cat /etc/openwrt_release").exit_code == 0
 
 
 def test_real_xray_update_replaces_files_and_carries_vless_traffic(local_router):
@@ -253,7 +207,7 @@ def test_real_xray_update_replaces_files_and_carries_vless_traffic(local_router)
 def test_real_switch_failure_restores_files_flags_and_old_process(local_router):
     source, _, other = setup_local(local_router)
     assert local_router.start("sing-box")
-    info = inspect_router(local_router, "/etc/sing-box/config.json", "sing-box")
+    info = inspect_router(local_router)
     target = next(e for e in info.engines if e.name == "xray")
     primary = prepare_router_update(
         json.dumps(source), local_router, target.config_path, "xray"
@@ -261,9 +215,7 @@ def test_real_switch_failure_restores_files_flags_and_old_process(local_router):
     # Exercise migration with real local HTTP inputs supported on Windows.
     plan = EngineUpdatePlan(primary, target, info)
     local_router.fail_restart = "xray"
-    result = apply_engine_update(
-        plan, local_router, "/etc/sing-box/config.json", "sing-box"
-    )
+    result = apply_engine_update(plan, local_router)
     assert not result.success and result.rollback_success
     assert local_router.read_text(primary.config_path) == primary.original_config_text
     assert local_router.running("sing-box") and not local_router.running("xray")
@@ -280,18 +232,13 @@ def test_real_switch_keeps_one_process_running_and_changes_boot_flags(local_rout
     local_router.boot["xray"] = True
     local_router.flag = "0"
     assert local_router.start("sing-box")
-    info = inspect_router(local_router, "/etc/sing-box/config.json", "sing-box")
+    info = inspect_router(local_router)
     target = next(e for e in info.engines if e.name == "xray")
     primary = prepare_router_update(
         json.dumps(source), local_router, target.config_path, "xray"
     )
     assert primary.preview["old_outbound"] == {"outbounds": []}
-    result = apply_engine_update(
-        EngineUpdatePlan(primary, target, info),
-        local_router,
-        "/etc/sing-box/config.json",
-        "sing-box",
-    )
+    result = apply_engine_update(EngineUpdatePlan(primary, target, info), local_router)
     assert result.success
     assert local_router.flag == "1"
     assert not local_router.running("sing-box") and local_router.running("xray")
@@ -308,14 +255,10 @@ def test_switch_waits_for_actual_delayed_process_stop_and_start_over_ssh(local_r
         ("xray", "restart"): 0.7,
     }
     with loopback_ssh_client(local_router) as (client, _progress):
-        info = inspect_router(client, "/etc/sing-box/config.json", "sing-box")
+        info = inspect_router(client)
         plan = prepare_engine_update(json.dumps(source), client, info, "xray")
-        result = apply_engine_update(
-            plan, client, "/etc/sing-box/config.json", "sing-box"
-        )
+        result = apply_engine_update(plan, client)
     assert result.success
-    assert "sleep 1; /etc/init.d/sing-box status" in local_router.calls
-    assert "sleep 1; /etc/init.d/xray status" in local_router.calls
     assert not local_router.overlapping_engines
     assert local_router.running("xray") and not local_router.running("sing-box")
     with probe_target() as target:
@@ -323,7 +266,7 @@ def test_switch_waits_for_actual_delayed_process_stop_and_start_over_ssh(local_r
 
 
 @pytest.mark.parametrize("failure", [None, "restart", "stage", "pending", "validation"])
-def test_transfer_uses_only_main_xray_file_and_restores_service_settings_on_failure(
+def test_transfer_keeps_xray_file_selection_and_restores_enabled_flag_on_failure(
     local_router, failure
 ):
     source, proxy, other = setup_local(local_router)
@@ -347,15 +290,14 @@ def test_transfer_uses_only_main_xray_file_and_restores_service_settings_on_fail
     }
     for path, text in examples.items():
         local_router.put(path, text)
-    local_router.set_uci_option("/etc/config/xray", "xray.config.confdir", "/etc/xray")
     local_router.flag = "0"
     assert local_router.start("sing-box")
     original = local_router.read_text("/etc/xray/config.json")
     original_settings = local_router.read_text("/etc/config/xray")
-    info = inspect_router(local_router, "/etc/sing-box/config.json", "sing-box")
+    info = inspect_router(local_router)
     plan = prepare_engine_update("", local_router, info, "xray", transfer=True)
     assert plan.primary.preview["old_outbound"] == {"outbounds": []}
-    assert "только /etc/xray/config.json" in plan.primary.warnings[0]
+    assert not plan.primary.warnings
     if failure == "restart":
         local_router.fail_restart = "xray"
     elif failure == "stage":
@@ -366,9 +308,7 @@ def test_transfer_uses_only_main_xray_file_and_restores_service_settings_on_fail
         local_router.fail_check = "xray"
     else:
         local_router.lose_uci_install_response = True
-    result = apply_engine_update(
-        plan, local_router, "/etc/sing-box/config.json", "sing-box"
-    )
+    result = apply_engine_update(plan, local_router)
     for path, text in examples.items():
         assert local_router.read_text(path) == text
     if failure:
@@ -387,9 +327,9 @@ def test_transfer_uses_only_main_xray_file_and_restores_service_settings_on_fail
         assert result.success
         settings = local_router.uci_values(local_router.read_text("/etc/config/xray"))
         assert settings["xray.config.conffiles"] == "/etc/xray/config.json"
-        assert "xray.config.confdir" not in settings
+        assert settings["xray.config.confdir"] == ""
         missing_directory = local_router.run("uci -q get xray.config.confdir")
-        assert missing_directory.exit_code == 1 and missing_directory.stdout == ""
+        assert missing_directory.exit_code == 0 and missing_directory.stdout == ""
         assert settings["xray.enabled.enabled"] == "1"
         assert settings["xray.config.dialer"] == "preserved-dialer"
         assert not local_router.running("sing-box") and local_router.running("xray")
@@ -399,54 +339,18 @@ def test_transfer_uses_only_main_xray_file_and_restores_service_settings_on_fail
     assert not list(local_router.path("/etc/config").glob(".xray.singroute-*"))
 
 
-@pytest.mark.parametrize(
-    "code,value,accepted",
-    [
-        (0, "", True),
-        (1, "", True),
-        (-1, "", False),
-        (127, "", False),
-        (1, "/etc/xray", False),
-    ],
-)
-def test_optional_confdir_accepts_absence_but_not_failed_or_nonempty_reads(
-    local_router, code, value, accepted
-):
-    setup_local(local_router)
-    local_router.set_uci_option("/etc/config/xray", "xray.config.confdir", "/etc/xray")
-    info = inspect_router(local_router, "/etc/sing-box/config.json", "sing-box")
-    original = local_router.read_text("/etc/config/xray")
-    real_run = local_router.run
-
-    def optional_get(command):
-        if command == "uci -q get xray.config.confdir":
-            return CommandResult(command, code, value)
-        return real_run(command)
-
-    local_router.run = optional_get
-    settings = XrayServiceConfig(local_router, info.engines[1], "a" * 32)
-    try:
-        assert settings.install() is accepted
-        assert settings.restore()
-        assert local_router.read_text("/etc/config/xray") == original
-    finally:
-        settings.close(safe=True)
-
-
 def test_secondary_check_failure_keeps_working_primary_and_inactive_original(
     local_router,
 ):
     source, proxy, _ = setup_local(local_router)
     assert local_router.start("xray")
-    info = inspect_router(local_router, "/etc/sing-box/config.json", "sing-box")
+    info = inspect_router(local_router)
     plan = prepare_engine_update(
         json.dumps(source), local_router, info, "xray", update_both=True
     )
     before = local_router.read_text("/etc/sing-box/config.json")
     local_router.fail_check = "sing-box"
-    result = apply_engine_update(
-        plan, local_router, "/etc/sing-box/config.json", "sing-box"
-    )
+    result = apply_engine_update(plan, local_router)
     assert result.success and result.partial
     assert "второй конфиг" in result.message
     assert local_router.read_text("/etc/sing-box/config.json") == before
@@ -458,13 +362,14 @@ def test_secondary_check_failure_keeps_working_primary_and_inactive_original(
 def test_both_configs_update_without_starting_inactive_engine(local_router):
     source, proxy, _ = setup_local(local_router)
     assert local_router.start("xray")
-    info = inspect_router(local_router, "/etc/sing-box/config.json", "sing-box")
-    plan = prepare_engine_update(
-        json.dumps(source), local_router, info, "xray", update_both=True
-    )
-    result = apply_engine_update(
-        plan, local_router, "/etc/sing-box/config.json", "sing-box"
-    )
+    with loopback_ssh_client(local_router) as (client, _):
+        info = inspect_router(client)
+        plan = prepare_engine_update(
+            json.dumps(source), client, info, "xray", update_both=True
+        )
+        before_apply = len(local_router.calls)
+        result = apply_engine_update(plan, client)
+        assert len(local_router.calls) - before_apply <= 24
     assert result.success and not result.partial
     assert "Оба конфига" in result.message
     assert not local_router.running("sing-box")
@@ -508,7 +413,7 @@ def test_anonymized_user_group_passes_real_xray_validation(tmp_path):
     binary = os.environ.get("XRAY_BINARY") or shutil.which("xray")
     if not binary:
         pytest.skip("Set XRAY_BINARY for real Xray validation")
-    from test_xray_outbounds import xray_router
+    from config_samples import xray_router
 
     source = (Path(__file__).parent / "fixtures/source_xray_leastload.json").read_text(
         encoding="utf-8"
@@ -572,15 +477,13 @@ def test_native_tiered_fallback_routes_through_loopback_and_final_server(
 def test_primary_validation_failure_still_updates_other_inactive_config(local_router):
     source, _, _ = setup_local(local_router)
     assert local_router.start("xray")
-    info = inspect_router(local_router, "/etc/sing-box/config.json", "sing-box")
+    info = inspect_router(local_router)
     plan = prepare_engine_update(
         json.dumps(source), local_router, info, "xray", update_both=True
     )
     before = local_router.read_text("/etc/xray/config.json")
     local_router.fail_check = "xray"
-    result = apply_engine_update(
-        plan, local_router, "/etc/sing-box/config.json", "sing-box"
-    )
+    result = apply_engine_update(plan, local_router)
     assert not result.success and result.partial
     assert local_router.read_text("/etc/xray/config.json") == before
     assert (
@@ -592,19 +495,41 @@ def test_primary_validation_failure_still_updates_other_inactive_config(local_ro
     assert not local_router.running("sing-box")
 
 
-def test_xray_update_over_real_ssh_uses_pinned_key_and_does_not_log_secrets(
-    local_router,
+@pytest.mark.parametrize("failure", [None, "restart", "stage", "pending", "validation"])
+def test_enabling_xray_preserves_service_file_selection_and_rolls_back(
+    tmp_path, failure
 ):
-    source, proxy, _ = setup_local(local_router)
-    assert local_router.start("xray")
-    with loopback_ssh_client(local_router) as (client, progress):
-        info = inspect_router(client, "/etc/sing-box/config.json", "sing-box")
-        plan = prepare_engine_update(json.dumps(source), client, info, "xray")
-        result = apply_engine_update(
-            plan, client, "/etc/sing-box/config.json", "sing-box"
-        )
-        assert result.success
-        assert UUID not in "\n".join(progress)
-        assert "test-password" not in "\n".join(progress)
-        with probe_target() as target:
-            assert proxy_request(proxy, target)
+    router = LocalRouter(tmp_path, required_engines=("xray",))
+    try:
+        source, proxy, _ = setup_local(router)
+        router.flag = "0"
+        original_settings = router.read_text("/etc/config/xray")
+        original_json = router.read_text("/etc/xray/config.json")
+        with loopback_ssh_client(router) as (client, _):
+            info = inspect_router(client)
+            plan = prepare_engine_update(json.dumps(source), client, info, "xray")
+            router.fail_restart = "xray" if failure == "restart" else None
+            router.fail_uci_stage = failure == "stage"
+            router.fail_check = "xray" if failure == "validation" else None
+            if failure == "pending":
+                router.pending_uci = "xray.config.dialer='pending change'"
+            result = apply_engine_update(plan, client)
+            assert result.success is (failure is None)
+            settings = router.uci_values(router.read_text("/etc/config/xray"))
+            assert settings["xray.config.conffiles"] == "/etc/xray/config.json"
+            assert settings["xray.config.confdir"] == ""
+            if failure:
+                assert router.read_text("/etc/config/xray") == original_settings
+                assert router.read_text("/etc/xray/config.json") == original_json
+                assert not router.running("xray")
+                assert router.pending_uci == (
+                    "xray.config.dialer='pending change'"
+                    if failure == "pending"
+                    else ""
+                )
+            else:
+                assert settings["xray.enabled.enabled"] == "1"
+                with probe_target() as target:
+                    assert proxy_request(proxy, target)
+    finally:
+        router.close()

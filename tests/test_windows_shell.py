@@ -36,18 +36,26 @@ def test_shell_failure_does_not_prevent_startup(monkeypatch: pytest.MonkeyPatch)
 def test_powershell_shell_notification(tmp_path: Path, shell_change_events):
     target = tmp_path / "SingRoute.exe"
     target.write_bytes(b"MZtest")
-    source = _read_installer_script()
-    definition = (
-        "function Update-ExecutableShellIcon"
-        + source.split("function Update-ExecutableShellIcon", 1)[1].split(
-            "$originalProcessExited = $false", 1
-        )[0]
-    )
+    source_path = tmp_path / "updater.ps1"
+    source_path.write_text(_read_installer_script(), encoding="utf-8-sig")
     script = tmp_path / "notify.ps1"
     script.write_text(
-        'param([string]$TargetPath)\n$ErrorActionPreference = "Stop"\n'
-        + definition.replace("catch {", "catch { throw")
-        + "\nUpdate-ExecutableShellIcon\nUpdate-ExecutableShellIcon\n",
+        """param([string]$TargetPath, [string]$SourcePath)
+$ErrorActionPreference = "Stop"
+$tokens = $null
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $SourcePath, [ref]$tokens, [ref]$parseErrors
+)
+if ($parseErrors.Count) { throw $parseErrors[0] }
+$definition = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Update-ExecutableShellIcon'
+}, $true)
+. ([scriptblock]::Create($definition.Extent.Text))
+Update-ExecutableShellIcon
+Update-ExecutableShellIcon
+""",
         encoding="utf-8-sig",
     )
     result = subprocess.run(
@@ -60,6 +68,8 @@ def test_powershell_shell_notification(tmp_path: Path, shell_change_events):
             str(script),
             "-TargetPath",
             str(target),
+            "-SourcePath",
+            str(source_path),
         ],
         capture_output=True,
         text=True,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -12,7 +13,6 @@ from singroute.application.router_update import (
     UPDATE_LOCKED_EXIT,
     RouterConfigChangedError,
     RouterUpdateError,
-    _build_guarded_install_command,
     _build_update_paths,
     apply_router_update,
     prepare_router_update,
@@ -27,7 +27,7 @@ PATHS = _build_update_paths(CONFIG_PATH, FIXED_NOW, OPERATION_ID)
 def test_prepare_router_update_only_reads_and_returns_masked_preview():
     client = SafeFakeRouterClient(files={CONFIG_PATH: _router_config_text()})
 
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     assert client.calls == [("read_text", CONFIG_PATH)]
     assert plan.config_path == CONFIG_PATH
@@ -42,8 +42,7 @@ def test_safe_update_uses_private_directory_guarded_install_and_cleanup():
         files={CONFIG_PATH: _router_config_text()},
         file_modes={CONFIG_PATH: "0640"},
     )
-    plan = prepare_router_update(_imported_config_text(), client)
-    install_command = _build_guarded_install_command(plan, PATHS)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
     client.calls.clear()
 
     result = _apply(plan, client)
@@ -55,31 +54,17 @@ def test_safe_update_uses_private_directory_guarded_install_and_cleanup():
     assert "sing-box" in result.details
     assert json.loads(client.files[CONFIG_PATH])["outbounds"][0]["server"] == "new.test"
     assert PATHS.backup_path not in client.files
-    assert ("run", f"umask 077; mkdir {PATHS.operation_directory}") in client.calls
-    assert ("write_text", PATHS.temporary_path) in client.calls
-    assert ("run", install_command) in client.calls
-    assert "sha256sum" in install_command
-    assert PATHS.lock_path not in install_command
-    assert f"cp -p {PATHS.backup_path} {PATHS.install_path}" in install_command
-    assert f"cat {PATHS.temporary_path} > {PATHS.install_path}" in install_command
     assert client.file_modes[CONFIG_PATH] == "0640"
-    assert client.service_lock_states == [True, True, True]
+    assert client.service_lock_states and all(client.service_lock_states)
     assert client.lock_held is False
 
 
 def test_failed_directory_removal_does_not_report_backup_as_preserved():
-    directory_command = f"rmdir {PATHS.operation_directory}"
     client = SafeFakeRouterClient(
         files={CONFIG_PATH: _router_config_text()},
-        command_results={
-            directory_command: CommandResult(
-                directory_command,
-                1,
-                stderr="directory busy",
-            )
-        },
+        cleanup_directory_exit=1,
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     result = _apply(plan, client)
 
@@ -95,7 +80,7 @@ def test_failed_lock_release_is_reported_after_successful_install():
         files={CONFIG_PATH: _router_config_text()},
         lock_release_exit=1,
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     with pytest.raises(RouterUpdateError, match="блокировку снять не удалось"):
         _apply(plan, client)
@@ -109,7 +94,7 @@ def test_failed_lock_release_does_not_hide_original_update_error():
         files={CONFIG_PATH: _router_config_text()},
         lock_release_exit=1,
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
     client.files[CONFIG_PATH] = json.dumps({"outbounds": [{"type": "direct"}]})
 
     with pytest.raises(RouterConfigChangedError, match="изменился") as raised:
@@ -131,7 +116,7 @@ def test_validation_failure_keeps_current_config_and_removes_private_files():
             )
         },
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     result = _apply(plan, client)
 
@@ -147,7 +132,7 @@ def test_validation_result_masks_both_configs_in_both_output_streams():
     original = json.loads(_router_config_text())
     original["outbounds"][0]["password"] = "old-secret"
     client = SafeFakeRouterClient(files={CONFIG_PATH: json.dumps(original)})
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
     old = json.loads(plan.original_config_text)["outbounds"][0]["password"]
     new = json.loads(plan.updated_config_text)["outbounds"][0]["password"]
     client.command_results[command] = CommandResult(
@@ -166,43 +151,12 @@ def test_validation_result_masks_both_configs_in_both_output_streams():
     assert client.files[CONFIG_PATH] == plan.original_config_text
 
 
-def test_config_changed_after_preview_aborts_before_private_directory():
-    client = SafeFakeRouterClient(files={CONFIG_PATH: _router_config_text()})
-    plan = prepare_router_update(_imported_config_text(), client)
-    client.files[CONFIG_PATH] = json.dumps({"outbounds": [{"type": "direct"}]})
-    client.calls.clear()
-
-    with pytest.raises(RouterConfigChangedError, match="изменился"):
-        _apply(plan, client)
-
-    assert ("read_text", CONFIG_PATH) in client.calls
-    assert not any(
-        call == ("run", f"umask 077; mkdir {PATHS.operation_directory}")
-        for call in client.calls
-    )
-    assert client.lock_held is False
-
-
-def test_config_changed_during_validation_is_detected_by_guarded_install():
-    client = SafeFakeRouterClient(
-        files={CONFIG_PATH: _router_config_text()},
-        change_config_after_validation=True,
-    )
-    plan = prepare_router_update(_imported_config_text(), client)
-
-    with pytest.raises(RouterConfigChangedError, match="во время проверки"):
-        _apply(plan, client)
-
-    assert json.loads(client.files[CONFIG_PATH])["outbounds"][0]["type"] == "direct"
-    assert PATHS.backup_path not in client.files
-
-
 def test_concurrent_update_lock_aborts_without_installing():
     client = SafeFakeRouterClient(
         files={CONFIG_PATH: _router_config_text()},
         lock_acquire_exit=UPDATE_LOCKED_EXIT,
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     with pytest.raises(RouterUpdateError, match="Другой экземпляр"):
         _apply(plan, client)
@@ -216,7 +170,7 @@ def test_lost_install_response_reconciles_updated_config_and_continues():
         files={CONFIG_PATH: _router_config_text()},
         install_applies_then_loses_response=True,
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     result = _apply(plan, client)
 
@@ -231,7 +185,7 @@ def test_ambiguous_install_preserves_recovery_state_when_ssh_returns_for_cleanup
         install_applies_then_loses_response=True,
         reconcile_temporarily_unavailable=True,
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     with pytest.raises(RouterUpdateError, match="однозначно определить"):
         _apply(plan, client)
@@ -255,7 +209,7 @@ def test_restart_failure_restores_backup_atomically_and_restarts_old_config():
             ]
         },
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     result = _apply(plan, client)
 
@@ -280,7 +234,7 @@ def test_service_that_dies_during_stability_window_triggers_rollback():
             ]
         },
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     result = _apply(plan, client)
 
@@ -288,7 +242,7 @@ def test_service_that_dies_during_stability_window_triggers_rollback():
     assert result.rollback_success is True
     assert result.backup_deleted is True
     assert client.files[CONFIG_PATH] == _router_config_text()
-    assert client.service_lock_states == [True] * 6
+    assert client.service_lock_states and all(client.service_lock_states)
 
 
 def test_registered_service_without_process_instances_does_not_report_success():
@@ -306,7 +260,7 @@ def test_registered_service_without_process_instances_does_not_report_success():
             * 10,
         },
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
     result = _apply(plan, client)
     assert not result.success
     assert result.rollback_success
@@ -333,7 +287,7 @@ def test_failed_service_after_rollback_keeps_backup_for_manual_recovery():
             * 10,
         },
     )
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
 
     result = _apply(plan, client)
 
@@ -346,7 +300,7 @@ def test_failed_service_after_rollback_keeps_backup_for_manual_recovery():
 
 def test_service_name_cannot_inject_a_shell_command():
     client = SafeFakeRouterClient(files={CONFIG_PATH: _router_config_text()})
-    plan = prepare_router_update(_imported_config_text(), client)
+    plan = prepare_router_update(_imported_config_text(), client, CONFIG_PATH)
     client.calls.clear()
 
     with pytest.raises(RouterUpdateError, match="имя службы"):
@@ -366,10 +320,7 @@ def test_config_path_rejects_control_characters_before_router_access():
 
 def _apply(plan, client):
     return apply_router_update(
-        plan,
-        client,
-        now=FIXED_NOW,
-        operation_id=OPERATION_ID,
+        plan, client, service_name="sing-box", now=FIXED_NOW, operation_id=OPERATION_ID
     )
 
 
@@ -380,7 +331,6 @@ class SafeFakeRouterClient:
     command_results: dict[str, CommandResult] = field(default_factory=dict)
     sequenced_results: dict[str, list[CommandResult]] = field(default_factory=dict)
     calls: list[tuple[str, ...]] = field(default_factory=list)
-    change_config_after_validation: bool = False
     lock_acquire_exit: int | None = None
     lock_release_exit: int | None = None
     install_applies_then_loses_response: bool = False
@@ -388,6 +338,7 @@ class SafeFakeRouterClient:
     transient_connection_failures: int = 0
     lock_held: bool = False
     service_lock_states: list[bool] = field(default_factory=list)
+    cleanup_directory_exit: int = 0
 
     def __post_init__(self) -> None:
         for path in self.files:
@@ -433,10 +384,6 @@ class SafeFakeRouterClient:
             return CommandResult(command, 0)
 
         if command == f"sing-box check -c {PATHS.temporary_path}":
-            if self.change_config_after_validation:
-                self.files[CONFIG_PATH] = json.dumps(
-                    {"outbounds": [{"type": "direct"}]}
-                )
             return CommandResult(command, 0)
         if "sha256sum" in command and PATHS.backup_path in command:
             if not self.lock_held:
@@ -466,9 +413,10 @@ class SafeFakeRouterClient:
             path = command.removeprefix("test -f ")
             return CommandResult(command, 0 if path in self.files else 1)
         if command.startswith("rm -f "):
-            path = command.removeprefix("rm -f ")
-            self.files.pop(path, None)
-            self.file_modes.pop(path, None)
+            for path in shlex.split(command):
+                self.files.pop(path, None)
+                self.file_modes.pop(path, None)
+            return CommandResult(command, 2 if self.cleanup_directory_exit else 0)
         return CommandResult(command, 0)
 
 

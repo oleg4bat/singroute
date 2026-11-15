@@ -5,7 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from test_auto_outbounds import UUID, xray_server
+from config_samples import UUID, native_group, tiered_group, xray_router, xray_server
 
 from singroute.application.operation import (
     prepare_config_update,
@@ -14,73 +14,6 @@ from singroute.application.operation import (
 )
 from singroute.core.converters.xray import to_xray
 from singroute.core.errors import ConfigPatchError
-
-
-def native_group(count=12):
-    servers = [xray_server(f"proxy-{index}") for index in range(count)]
-    return {
-        "log": {"access": "/client/log.txt"},
-        "dns": {"servers": ["https://source.test/dns-query"]},
-        "inbounds": [{"protocol": "socks", "port": 10808}],
-        "outbounds": [
-            *servers,
-            {"protocol": "freedom", "tag": "direct"},
-            {"protocol": "blackhole", "tag": "block"},
-        ],
-        "burstObservatory": {
-            "subjectSelector": ["proxy"],
-            "pingConfig": {
-                "connectivity": "",
-                "destination": "http://www.gstatic.com/generate_204",
-                "interval": "2m",
-                "sampling": 3,
-                "timeout": "3s",
-            },
-        },
-        "routing": {
-            "domainStrategy": "IPIfNonMatch",
-            "domainMatcher": "hybrid",
-            "balancers": [
-                {
-                    "tag": "Auto_Balancer",
-                    "selector": ["proxy"],
-                    "fallbackTag": "proxy-0",
-                    "strategy": {
-                        "type": "leastLoad",
-                        "settings": {
-                            "baselines": ["200ms", "500ms"],
-                            "costs": [{"match": "bypass", "regexp": True, "value": 3}],
-                            "expected": 7,
-                            "maxRTT": "1500ms",
-                            "tolerance": 0,
-                        },
-                    },
-                }
-            ],
-            "rules": [
-                {"type": "field", "domain": ["domain:ru"], "outboundTag": "direct"},
-                {"type": "field", "network": "tcp,udp", "balancerTag": "Auto_Balancer"},
-            ],
-        },
-    }
-
-
-def xray_router():
-    return {
-        "log": {"loglevel": "warning", "access": "none"},
-        "inbounds": [
-            {
-                "tag": "tproxy-in",
-                "protocol": "dokodemo-door",
-                "listen": "0.0.0.0",
-                "port": 1100,
-                "settings": {"network": "tcp,udp", "followRedirect": True},
-                "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
-            }
-        ],
-        "outbounds": [],
-        "routing": {"domainStrategy": "AsIs"},
-    }
 
 
 @pytest.mark.parametrize("engine", ["sing-box", "xray"])
@@ -220,14 +153,6 @@ def test_anonymized_user_export_retains_all_twelve_reality_servers_and_native_po
     assert len(singbox.updated_config["outbounds"]) == 13
     assert singbox.updated_config["outbounds"][0]["type"] == "urltest"
     assert not singbox.warnings
-
-
-def tiered_group():
-    return json.loads(
-        (
-            Path(__file__).parent / "fixtures/source_xray_tiered_leastload.json"
-        ).read_text(encoding="utf-8")
-    )
 
 
 def test_tiered_fallback_group_preserves_both_strategies_and_only_internal_routing():

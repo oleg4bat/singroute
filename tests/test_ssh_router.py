@@ -7,6 +7,7 @@ import paramiko
 import pytest
 
 import singroute.infrastructure.ssh_router as ssh_router
+from singroute.application.router_client import RouterFileReadError
 from singroute.infrastructure.ssh_router import (
     HostKeyMismatchError,
     SshOperationCancelled,
@@ -107,6 +108,21 @@ def test_read_text_uses_dropbear_compatible_cat_instead_of_sftp():
 
     assert content == '{"outbounds": []}\n'
     assert transport.command == "cat /etc/sing-box/config.json"
+
+
+def test_failed_cat_is_a_file_error_and_does_not_echo_partial_config():
+    transport = FakeExecClient(
+        stdout=b"partial-config-secret", stderr=b"remote-secret", exit_code=1
+    )
+    client = SshRouterClient(host="192.168.1.1")
+    client._client = transport
+
+    with pytest.raises(RouterFileReadError) as captured:
+        client.read_text("/etc/xray/config.json")
+
+    assert captured.value.path == "/etc/xray/config.json"
+    assert "secret" not in str(captured.value)
+    assert client._client is transport
 
 
 def test_write_text_streams_utf8_to_remote_cat_without_sftp():

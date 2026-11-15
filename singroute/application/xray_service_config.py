@@ -1,11 +1,11 @@
-"""Stage and restore OpenWrt's Xray file selection without editing examples."""
+"""Enable Xray transactionally without changing the service's config path."""
 
 from __future__ import annotations
 
 import hashlib
 import shlex
 
-from .router_client import RouterClient
+from .router_client import RouterClient, run_commands
 from .router_connection import RouterEngine
 from .router_update import (
     RouterUpdateError,
@@ -15,7 +15,6 @@ from .router_update import (
     _build_update_paths,
     _cleanup_operation_directory,
     _create_operation_directory,
-    _reconcile_install_state,
     _release_update_lock,
     _run_or_failure,
 )
@@ -33,20 +32,27 @@ class XrayServiceConfig:
 
     def install(self) -> bool:
         """Generate UCI changes in a private copy, then compare and replace."""
-        original = self.engine.xray_config_text
-        self.issue = "Не удалось настроить загрузку основного конфига Xray."
-        if original is None:
-            return False
+        self.issue = "Не удалось включить Xray в настройках службы OpenWrt."
         _acquire_update_lock(self.client, self.paths, self.operation_id)
         self.locked = True
-        if self.client.read_text("/etc/config/xray") != original:
-            self.issue = "Настройки службы Xray изменились после подготовки превью."
-            return False
         # Pending LuCI/uci edits must not be committed or discarded by SingRoute.
-        pending = self.client.run("uci -q changes xray")
-        if pending.exit_code != 0 or pending.stdout.strip():
+        snapshot = run_commands(
+            self.client,
+            {
+                "config": "cat /etc/config/xray",
+                "pending": "uci -q changes xray",
+            },
+            "Подготавливаю включение Xray",
+        )
+        pending = snapshot["pending"]
+        if (
+            snapshot["config"].exit_code != 0
+            or pending.exit_code != 0
+            or pending.stdout.strip()
+        ):
             self.issue = "Не удалось подтвердить отсутствие несохранённых изменений UCI. Завершите изменение настроек Xray и повторите перенос."
             return False
+        original = snapshot["config"].stdout
         _create_operation_directory(self.client, self.paths.operation_directory)
         self.created = True
         stage = self.paths.operation_directory
@@ -55,8 +61,6 @@ class XrayServiceConfig:
         command = " && ".join(
             [
                 f"mkdir {shlex.quote(stage + '/delta')}",
-                f"{uci} set {shlex.quote('xray.config.conffiles=' + self.engine.config_path)}",
-                f"{uci} set xray.config.confdir=''",
                 f"{uci} set xray.enabled.enabled=1",
                 f"{uci} commit xray",
             ]
@@ -64,11 +68,23 @@ class XrayServiceConfig:
         if _run_or_failure(self.client, command).exit_code != 0:
             self.issue = "Не удалось подготовить настройки службы Xray; действующие настройки не изменены."
             return False
-        updated = self.client.read_text(stage + "/xray")
-        pending = self.client.run("uci -q changes xray")
-        if pending.exit_code != 0 or pending.stdout.strip():
+        prepared = run_commands(
+            self.client,
+            {
+                "config": f"cat {shlex.quote(stage + '/xray')}",
+                "pending": "uci -q changes xray",
+            },
+            "Читаю подготовленные настройки Xray",
+        )
+        pending = prepared["pending"]
+        if (
+            prepared["config"].exit_code != 0
+            or pending.exit_code != 0
+            or pending.stdout.strip()
+        ):
             self.issue = "Во время подготовки появились несохранённые изменения UCI. Действующие настройки службы не заменены."
             return False
+        updated = prepared["config"].stdout
         self.client.write_text(self.paths.temporary_path, updated)
         self.plan = RouterUpdatePlan(
             "/etc/config/xray", original, updated, {}, original != updated
@@ -76,24 +92,34 @@ class XrayServiceConfig:
         result = _run_or_failure(
             self.client, _build_guarded_install_command(self.plan, self.paths)
         )
-        state, backup = _reconcile_install_state(self.plan, self.client, self.paths)
+        installed = run_commands(
+            self.client,
+            {
+                "config": "cat /etc/config/xray",
+                "backup": f"test -f {shlex.quote(self.paths.backup_path)}",
+                "enabled": "uci -q get xray.enabled.enabled",
+            },
+            "Проверяю включение Xray",
+        )
+        current = installed["config"]
+        state = (
+            "updated"
+            if current.exit_code == 0 and current.stdout == updated
+            else "original"
+            if current.exit_code == 0 and current.stdout == original
+            else "unknown"
+        )
+        backup = installed["backup"].exit_code == 0
         self.uncertain = state not in {"original", "updated"}
         if result.exit_code != 0 and state != "updated":
             return False
         if not backup:
             self.uncertain = state != "original"
             return False
-        # Confirm what init.d will consume, including any concurrent UCI edits.
-        files = self.client.run("uci -q get xray.config.conffiles")
-        directory = self.client.run("uci -q get xray.config.confdir")
-        enabled = self.client.run("uci -q get xray.enabled.enabled")
+        enabled = installed["enabled"]
         configured = (
-            files.exit_code == enabled.exit_code == 0
-            # uci set with an empty value deletes the optional confdir, so get
-            # returns 1. Required options still prove the package is readable.
-            and directory.exit_code in {0, 1}
-            and files.stdout.split() == [self.engine.config_path]
-            and not directory.stdout.strip()
+            state == "updated"
+            and enabled.exit_code == 0
             and enabled.stdout.strip() == "1"
         )
         if configured:
@@ -137,9 +163,13 @@ class XrayServiceConfig:
         if self.created:
             if safe and not self.uncertain:
                 stage = self.paths.operation_directory
-                for path in (stage + "/xray", stage + "/delta/xray"):
-                    _run_or_failure(self.client, f"rm -f {shlex.quote(path)}")
-                _run_or_failure(self.client, f"rmdir {shlex.quote(stage + '/delta')}")
+                _run_or_failure(
+                    self.client,
+                    (
+                        f"rm -f {shlex.quote(stage + '/xray')} {shlex.quote(stage + '/delta/xray')} "
+                        f"&& rmdir {shlex.quote(stage + '/delta')}"
+                    ),
+                )
                 cleanup = _cleanup_operation_directory(self.client, self.paths)
                 if not cleanup.directory_deleted:
                     message += f" Остались служебные файлы: {stage}."

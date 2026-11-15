@@ -25,8 +25,6 @@ from singroute.application.router_service import (
 )
 from singroute.core.diagnostics import redact_config_output
 
-DEFAULT_CONFIG_PATH = "/etc/sing-box/config.json"
-DEFAULT_SERVICE_NAME = "sing-box"
 DEFAULT_SING_BOX_COMMAND = "sing-box"
 INSTALL_IO_ERROR_EXIT = 74
 CONFIG_CHANGED_EXIT = 75
@@ -68,6 +66,7 @@ class RouterUpdateResult:
     message: str = ""
     details: str = ""
     partial: bool = False
+    service_state_known: bool = True
 
 
 @dataclass(frozen=True)
@@ -89,7 +88,7 @@ class _CleanupResult:
 def prepare_router_update(
     imported_config_content: str,
     router_client: RouterClient,
-    config_path: str = DEFAULT_CONFIG_PATH,
+    config_path: str,
     engine: str = "sing-box",
 ) -> RouterUpdatePlan:
     """Read the router and prepare a preview without changing remote state."""
@@ -111,7 +110,7 @@ def prepare_router_update(
 
 def read_router_outbound_summary(
     router_client: RouterClient,
-    config_path: str = DEFAULT_CONFIG_PATH,
+    config_path: str,
     engine: str = "sing-box",
 ) -> dict[str, Any]:
     """Read and mask the outbound that the application would replace."""
@@ -122,7 +121,7 @@ def read_router_outbound_summary(
 def apply_router_update(
     plan: RouterUpdatePlan,
     router_client: RouterClient,
-    service_name: str = DEFAULT_SERVICE_NAME,
+    service_name: str,
     sing_box_command: str = DEFAULT_SING_BOX_COMMAND,
     now: datetime | None = None,
     operation_id: str | None = None,
@@ -147,13 +146,6 @@ def apply_router_update(
     try:
         _acquire_update_lock(router_client, paths, operation_id)
         lock_acquired = True
-
-        current_config_text = router_client.read_text(plan.config_path)
-        if current_config_text != plan.original_config_text:
-            raise RouterConfigChangedError(
-                "Конфиг роутера изменился после подготовки превью. "
-                "Обновите превью и повторите операцию."
-            )
 
         _create_operation_directory(router_client, paths.operation_directory)
         operation_directory_created = True
@@ -202,7 +194,7 @@ def apply_router_update(
             _cleanup_operation_directory(router_client, paths)
             operation_directory_created = False
             raise RouterConfigChangedError(
-                "Конфиг роутера изменился во время проверки. "
+                "Конфиг роутера изменился после подготовки превью. "
                 "Изменения не установлены; обновите превью."
             )
         if install_result.exit_code == 0:
@@ -453,23 +445,25 @@ def _cleanup_operation_directory(
     router_client: RouterClient,
     paths: _UpdatePaths,
 ) -> _CleanupResult:
-    cleanup_ok = True
-    for path in (paths.temporary_path, paths.install_path, paths.restore_path):
-        cleanup_ok = _remove_file(router_client, path).exit_code == 0 and cleanup_ok
-    backup_deleted = False
-    if cleanup_ok:
-        backup_deleted = _remove_file(router_client, paths.backup_path).exit_code == 0
-        cleanup_ok = backup_deleted
-    directory_deleted = False
-    if cleanup_ok:
-        result = _run_or_failure(
-            router_client,
-            f"rmdir {shlex.quote(paths.operation_directory)}",
+    temporary_files = " ".join(
+        shlex.quote(path)
+        for path in (
+            paths.temporary_path,
+            paths.install_path,
+            paths.restore_path,
         )
-        directory_deleted = result.exit_code == 0
+    )
+    result = _run_or_failure(
+        router_client,
+        (
+            f"rm -f {temporary_files} && rm -f {shlex.quote(paths.backup_path)} "
+            "|| exit 1; "
+            f"rmdir {shlex.quote(paths.operation_directory)} || exit 2"
+        ),
+    )
     return _CleanupResult(
-        backup_deleted=backup_deleted,
-        directory_deleted=directory_deleted,
+        backup_deleted=result.exit_code in {0, 2},
+        directory_deleted=result.exit_code == 0,
     )
 
 
@@ -482,14 +476,6 @@ def _cleanup_summary(result: _CleanupResult) -> str:
             "не удалось."
         )
     return "временную резервную копию удалить не удалось."
-
-
-def _remove_file(router_client: RouterClient, path: str) -> CommandResult:
-    command = f"rm -f {shlex.quote(path)}"
-    try:
-        return router_client.run(command)
-    except Exception as error:
-        return CommandResult(command=command, exit_code=-1, stderr=str(error))
 
 
 def _run_or_failure(router_client: RouterClient, command: str) -> CommandResult:
@@ -577,6 +563,7 @@ def _rollback_after_service_failure(
         backup_path=paths.backup_path,
         validation_result=validation_result,
         rollback_success=rollback_success,
+        service_state_known=rollback_success,
         backup_deleted=backup_deleted,
         message=message,
     )

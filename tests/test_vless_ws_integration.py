@@ -10,9 +10,7 @@ import shutil
 import socket
 import socketserver
 import ssl
-import subprocess
 import threading
-import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +21,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from local_proxy import _singbox_process, _unused_ports
 
 from singroute.application.operation import prepare_config_update
 
@@ -111,17 +110,6 @@ def test_imported_ws_tls_outbound_carries_real_http_traffic(
     }
 
 
-def _unused_ports(count):
-    sockets = [socket.socket() for _ in range(count)]
-    try:
-        for listener in sockets:
-            listener.bind(("127.0.0.1", 0))
-        return [listener.getsockname()[1] for listener in sockets]
-    finally:
-        for listener in sockets:
-            listener.close()
-
-
 def _create_certificate(directory):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "tls.example.test")])
@@ -150,41 +138,6 @@ def _create_certificate(directory):
         )
     )
     return cert_path, key_path
-
-
-@contextmanager
-def _singbox_process(binary, config, path: Path, listen_port):
-    path.write_text(json.dumps(config), encoding="utf-8")
-    log_path = path.with_suffix(".log")
-    with log_path.open("w", encoding="utf-8") as log:
-        process = subprocess.Popen(
-            [binary, "run", "-c", str(path)],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        try:
-            deadline = time.monotonic() + 10
-            while True:
-                assert process.poll() is None, log_path.read_text(encoding="utf-8")
-                try:
-                    with socket.create_connection(
-                        ("127.0.0.1", listen_port), timeout=0.1
-                    ):
-                        break
-                except OSError:
-                    assert time.monotonic() < deadline, log_path.read_text(
-                        encoding="utf-8"
-                    )
-                    time.sleep(0.02)
-            yield
-        finally:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
 
 
 @contextmanager

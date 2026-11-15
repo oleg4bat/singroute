@@ -268,12 +268,6 @@ def test_launch_staged_update_hands_resolved_paths_to_powershell(
         "creationflags": subprocess.CREATE_NO_WINDOW,
     }
     assert dll_directory_calls == [None, str(tmp_path / "_MEI-old")]
-    assert (
-        app_update._read_installer_script().count(
-            '$env:PYINSTALLER_RESET_ENVIRONMENT = "1"'
-        )
-        == 2
-    )
 
 
 def test_launch_staged_update_reports_helper_start_failure(

@@ -1,13 +1,16 @@
-"""Checks performed once after an SSH connection is established."""
+"""Discover standard OpenWrt services and the config they actually load."""
 
 from __future__ import annotations
 
+import json
+import posixpath
 import shlex
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from singroute.application.router_client import RouterClient
-from singroute.application.router_service import service_running_state
+from .router_client import RouterClient, run_commands
+from .router_service import service_running_state
+from .router_update import RouterUpdateError, _validate_config_path
 
 
 @dataclass(frozen=True)
@@ -15,155 +18,303 @@ class RouterEngine:
     name: str
     binary_path: str
     config_path: str
-    service_name: str
     running: bool = False
     boot_enabled: bool = False
     issue: str = ""
     xray_enabled: str | None = None
-    xray_config_text: str | None = None
     xray_asset_directory: str = "/usr/share/xray"
     service_state_issue: str = ""
-    xray_needs_single_config: bool = False
+    service_exists: bool = True
+
+    @property
+    def service_name(self) -> str:
+        return self.name
 
 
 @dataclass(frozen=True)
 class RouterInfo:
     openwrt_release: str
-    sing_box_path: str = ""
     engines: tuple[RouterEngine, ...] = ()
 
     @property
     def available_engines(self) -> tuple[RouterEngine, ...]:
-        # Compatibility with callers that construct RouterInfo directly.
-        return self.engines or (
-            (
-                RouterEngine(
-                    "sing-box",
-                    self.sing_box_path,
-                    "/etc/sing-box/config.json",
-                    "sing-box",
-                    True,
-                ),
-            )
-            if self.sing_box_path
-            else ()
-        )
+        return self.engines
 
     @property
     def preferred_engine(self) -> str | None:
-        engines = self.available_engines
         return next(
-            (e.name for e in engines if e.running), engines[0].name if engines else None
+            (e.name for e in self.engines if e.running),
+            self.engines[0].name if self.engines else None,
         )
 
 
 class RouterCompatibilityError(RuntimeError):
-    """Raised when the connected host cannot run the update workflow."""
+    """The connected host cannot run the update workflow."""
+
+
+def _command_config_path(name: str, command: object) -> str:
+    if (
+        not isinstance(command, list)
+        or not command
+        or not all(isinstance(arg, str) for arg in command)
+        or posixpath.basename(command[0]) != name
+    ):
+        raise ValueError("Unsupported service command")
+    files = []
+    flags = {"-c", "--config"} if name == "sing-box" else {"-c", "-config", "--config"}
+    directories = {"-C", "--config-directory", "-confdir", "--confdir"}
+    index = 1
+    while index < len(command):
+        arg, equals, value = command[index].partition("=")
+        if arg in directories:
+            raise ValueError("Config directories are ambiguous")
+        if arg in flags or (name == "xray" and arg in {"-format", "--format"}):
+            if not equals:
+                index += 1
+                if index == len(command):
+                    raise ValueError("Missing option value")
+                value = command[index]
+            if arg in flags:
+                files.append(value)
+            elif value != "json":
+                raise ValueError("Unsupported config format")
+        index += 1
+    if len(files) != 1:
+        raise ValueError("A single config is required")
+    _validate_config_path(files[0])
+    return files[0]
+
+
+def _procd_config_path(text: str, name: str) -> str:
+    data = json.loads(text)
+    service = data.get(name) if isinstance(data, dict) else None
+    instances = service.get("instances") if isinstance(service, dict) else None
+    if not isinstance(instances, dict):
+        raise ValueError("Missing instances")
+    running = [
+        instance
+        for instance in instances.values()
+        if isinstance(instance, dict) and instance.get("running") is True
+    ]
+    if len(running) != 1:
+        raise ValueError("A single running instance is required")
+    return _command_config_path(name, running[0].get("command"))
+
+
+def _running_config_path(client: RouterClient, name: str) -> str:
+    query = shlex.quote(json.dumps({"name": name}, separators=(",", ":")))
+    result = client.run(f"ubus call service list {query}")
+    if result.exit_code != 0:
+        raise ValueError("Service state unavailable")
+    return _procd_config_path(result.stdout, name)
+
+
+def _xray_options(text: str) -> dict[str, list[str]]:
+    options = {}
+    relevant = {
+        "xray.config.conffiles",
+        "xray.config.confdir",
+        "xray.enabled.enabled",
+        "xray.config.format",
+        "xray.config.datadir",
+    }
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key in relevant:
+            options[key] = shlex.split(value)
+    return options
+
+
+def refresh_service_states(
+    client: RouterClient, info: RouterInfo, *, include_boot: bool = False
+) -> RouterInfo:
+    """Refresh only the mutable state needed for apply or service rollback."""
+    commands = {}
+    for index, engine in enumerate(info.engines):
+        if not engine.service_exists:
+            continue
+        service = shlex.quote("/etc/init.d/" + engine.name)
+        commands[f"status_{index}"] = f"{service} status"
+        if include_boot:
+            commands[f"boot_{index}"] = f"{service} enabled"
+    results = run_commands(client, commands, "Проверяю состояние служб")
+    engines = []
+    for index, engine in enumerate(info.engines):
+        if not engine.service_exists:
+            engines.append(engine)
+            continue
+        state = service_running_state(results[f"status_{index}"])
+        boot = results.get(f"boot_{index}")
+        issue = (
+            ""
+            if state is not None and (boot is None or boot.exit_code in {0, 1})
+            else "Не удалось определить состояние службы. Переподключитесь к роутеру."
+        )
+        engines.append(
+            replace(
+                engine,
+                running=state is True,
+                boot_enabled=boot.exit_code == 0
+                if boot is not None
+                else engine.boot_enabled,
+                service_state_issue=issue,
+            )
+        )
+    return replace(info, engines=tuple(engines))
 
 
 def inspect_router(
-    client: RouterClient,
-    config_path: str,
-    service_name: str,
-    report: Callable[[str], None] | None = None,
+    client: RouterClient, report: Callable[[str], None] | None = None
 ) -> RouterInfo:
-    """Verify OpenWrt, sing-box, config, and init service availability."""
+    """Discover files from procd/UCI; never guess a path or accept overrides."""
     notify = report or (lambda _: None)
-
     notify("Проверяю, что устройство работает на OpenWrt…")
-    release = client.run("cat /etc/openwrt_release")
+    commands = {"release": "cat /etc/openwrt_release"}
+    for name in ("sing-box", "xray"):
+        service = f"/etc/init.d/{name}"
+        commands.update(
+            {
+                f"{name}_service": f"test -x {service}",
+                f"{name}_binary": f"command -v {name}",
+                f"{name}_status": f"{service} status",
+                f"{name}_boot": f"{service} enabled",
+                f"{name}_config": "uci -q get sing-box.main.conffile"
+                if name == "sing-box"
+                else "uci -q show xray",
+                f"{name}_procd": "ubus call service list "
+                + shlex.quote(json.dumps({"name": name}, separators=(",", ":"))),
+            }
+        )
+    results = run_commands(client, commands, "Определяю службы и конфиги OpenWrt")
+    release = results["release"]
     if release.exit_code != 0 or "OpenWrt" not in release.stdout:
         raise RouterCompatibilityError(
             "Удалённое устройство не распознано как OpenWrt."
         )
-
-    notify("Проверяю наличие sing-box и Xray…")
+    notify("Проверяю службы sing-box и Xray…")
     engines = []
-    for name, path, service in (
-        ("sing-box", config_path, service_name),
-        ("xray", "/etc/xray/config.json", "xray"),
-    ):
-        binary = client.run(f"command -v {name}")
-        if binary.exit_code == 1 or (
+    for name in ("sing-box", "xray"):
+        service = f"/etc/init.d/{name}"
+        service_exists = results[f"{name}_service"].exit_code == 0
+        binary = results[f"{name}_binary"]
+        if binary.exit_code in {1, 127} or (
             binary.exit_code == 0 and not binary.stdout.strip()
         ):
-            continue
-        if binary.exit_code != 0:
-            raise RouterCompatibilityError(
-                "Не удалось подтвердить наличие движка на роутере."
-            )
-        issue = ""
-        xray_enabled = xray_config_text = None
-        asset_directory = "/usr/share/xray"
-        xray_needs_single_config = False
-        if name == "xray":
-            config_exists = client.run("test -r /etc/config/xray")
-            if config_exists.exit_code == 0:
-                xray_config_text = client.read_text("/etc/config/xray")
-                files = client.run("uci -q get xray.config.conffiles")
-                directory = client.run("uci -q get xray.config.confdir")
-                flag = client.run("uci -q get xray.enabled.enabled")
-                format_result = client.run("uci -q get xray.config.format")
-                assets = client.run("uci -q get xray.config.datadir")
-                if any(
-                    r.exit_code not in {0, 1}
-                    for r in (files, directory, flag, format_result, assets)
-                ):
-                    raise RouterCompatibilityError(
-                        "Не удалось прочитать настройки службы Xray."
-                    )
-                # SingRoute always edits its primary file, never package examples
-                # or fragments found in confdir. Reconcile the service on apply.
-                xray_needs_single_config = files.stdout.split() != [path] or bool(
-                    directory.stdout.strip()
-                )
-                xray_enabled = flag.stdout.strip() if flag.exit_code == 0 else None
-                if xray_enabled not in {"0", "1"}:
-                    issue = "В /etc/config/xray задайте enabled.enabled: 0 или 1."
-                if format_result.stdout.strip() not in {"", "json"}:
-                    issue = "Для импорта Xray служба должна использовать формат JSON."
-                asset_directory = assets.stdout.strip() or "/usr/share/xray"
-            else:
-                issue = "Не найден /etc/config/xray. Настройте службу пакета xray-core."
-        service_command = shlex.quote(f"/etc/init.d/{service}")
-        if client.run(f"test -r {shlex.quote(path)}").exit_code != 0:
-            issue = f"Конфиг {path} не найден или недоступен для чтения."
-        service_exists = client.run(f"test -x {service_command}").exit_code == 0
-        if not service_exists:
-            issue = f"Служба /etc/init.d/{service} не найдена."
+            if not service_exists:
+                continue
+            binary_path = ""
+        elif binary.exit_code != 0:
+            raise RouterCompatibilityError("Не удалось проверить движки на роутере.")
+        else:
+            binary_path = binary.stdout.strip()
+        issue = state_issue = ""
         running = boot = False
-        service_state_issue = ""
         if service_exists:
-            status = client.run(f"{service_command} status")
-            enabled = client.run(f"{service_command} enabled")
+            status = results[f"{name}_status"]
+            enabled = results[f"{name}_boot"]
             state = service_running_state(status)
-            if state is None or enabled.exit_code not in {0, 1}:
-                service_state_issue = "Не удалось определить состояние службы или автозапуска. Конфиг можно просмотреть; применение пока недоступно."
             running, boot = state is True, enabled.exit_code == 0
+            if state is None or enabled.exit_code not in {0, 1}:
+                state_issue = "Не удалось определить состояние службы или автозапуска. Конфиг можно просмотреть; применение пока недоступно."
+        else:
+            issue = f"Служба {service} не найдена. Установите и настройте {name} на роутере."
+        if not binary_path:
+            issue = f"Служба {name} найдена, но движок не установлен. Переустановите пакет на роутере."
+        path = ""
+        xray_enabled = None
+        assets = "/usr/share/xray"
+        if service_exists:
+            if name == "sing-box":
+                selected = results[f"{name}_config"]
+                if selected.exit_code == 0:
+                    path = selected.stdout.strip()
+                else:
+                    issue = (
+                        issue
+                        or "Не удалось определить конфиг sing-box. Настройте файл в службе OpenWrt."
+                    )
+            else:
+                selected = results[f"{name}_config"]
+                try:
+                    options = (
+                        _xray_options(selected.stdout)
+                        if selected.exit_code == 0
+                        else {}
+                    )
+                except ValueError:
+                    options = {}
+                files = options.get("xray.config.conffiles", [])
+                directory = options.get("xray.config.confdir", [])
+                if (
+                    len(files) == 1
+                    and len(files[0].split()) == 1
+                    and not any(directory)
+                ):
+                    path = files[0]
+                else:
+                    issue = (
+                        issue
+                        or "Не удалось однозначно определить конфиг Xray. Настройте службу OpenWrt на один JSON-файл без каталога конфигов."
+                    )
+                flag = options.get("xray.enabled.enabled", [])
+                xray_enabled = flag[0] if len(flag) == 1 else None
+                if xray_enabled not in {"0", "1"}:
+                    issue = (
+                        issue
+                        or "Не удалось прочитать настройки включения Xray в OpenWrt."
+                    )
+                if options.get("xray.config.format", []) not in ([], [""], ["json"]):
+                    issue = issue or "Служба Xray должна использовать формат JSON."
+                asset_directory = options.get("xray.config.datadir", [])
+                if len(asset_directory) > 1:
+                    issue = issue or "Не удалось прочитать каталог ресурсов Xray."
+                assets = (
+                    asset_directory[0]
+                    if asset_directory and asset_directory[0]
+                    else assets
+                )
+            if running:
+                try:
+                    procd = results[f"{name}_procd"]
+                    if procd.exit_code != 0:
+                        raise ValueError("Service state unavailable")
+                    active_path = _procd_config_path(procd.stdout, name)
+                    if path and active_path != path:
+                        issue = (
+                            issue
+                            or f"Настройки службы {name} отличаются от запущенного конфига. Перезапустите службу на роутере и переподключитесь."
+                        )
+                    path = active_path
+                except (ValueError, RouterUpdateError):
+                    path = ""
+                    issue = (
+                        issue
+                        or f"Не удалось однозначно определить конфиг работающей службы {name}. Проверьте настройки службы OpenWrt."
+                    )
+            try:
+                _validate_config_path(path)
+            except RouterUpdateError:
+                path = ""
+                issue = (
+                    issue
+                    or f"Служба {name} не указала корректный абсолютный путь конфига. Настройте её в OpenWrt."
+                )
         engines.append(
             RouterEngine(
-                name,
-                binary.stdout.strip(),
-                path,
-                service,
-                running,
-                boot,
-                issue,
-                xray_enabled,
-                xray_config_text,
-                asset_directory,
-                service_state_issue,
-                xray_needs_single_config,
+                name=name,
+                binary_path=binary_path,
+                config_path=path,
+                running=running,
+                boot_enabled=boot,
+                issue=issue,
+                xray_enabled=xray_enabled,
+                xray_asset_directory=assets,
+                service_state_issue=state_issue,
+                service_exists=service_exists,
             )
         )
     notify("Состояние движков определено.")
-    return RouterInfo(
-        openwrt_release=_openwrt_description(release.stdout),
-        sing_box_path=next(
-            (e.binary_path for e in engines if e.name == "sing-box"), ""
-        ),
-        engines=tuple(engines),
-    )
+    return RouterInfo(_openwrt_description(release.stdout), tuple(engines))
 
 
 def _openwrt_description(release_text: str) -> str:

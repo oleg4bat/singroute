@@ -51,6 +51,27 @@ def test_source_happ_vless_reality_1_fixture_patches_router_config():
     assert "spiderX" not in json.dumps(outbound)
     assert_no_xray_fields(outbound)
 
+    summaries_text = json.dumps(result.preview, ensure_ascii=False)
+
+    for secret in [
+        "TEST-HAPP-VLESS-UUID-1",
+        "TEST-OLD-ROUTER-UUID",
+        "TEST-OLD-ROUTER-PASSWORD",
+        "TEST-HAPP-PUBLIC-KEY-1",
+        "TESTSHORTID1",
+        "TEST-OLD-PRIVATE-KEY",
+    ]:
+        assert secret not in summaries_text
+
+    old_summary = result.preview["old_outbound"]
+    new_summary = result.preview["new_outbound"]
+    assert old_summary["uuid"] == "***"
+    assert old_summary["password"] == "***"
+    assert old_summary["tls"]["private_key"] == "***"
+    assert new_summary["uuid"] == "***"
+    assert new_summary["tls"]["reality"]["public_key"] == "***"
+    assert new_summary["tls"]["reality"]["short_id"] == "***"
+
 
 def test_source_happ_vless_reality_2_fixture_does_not_copy_source_sections():
     router_base = json.loads(load_fixture("router_base_singbox.json"))
@@ -108,39 +129,6 @@ def test_source_happ_hysteria2_fixture_patches_router_config():
     assert outbound["tls"]["insecure"] is False
     assert_no_xray_fields(outbound)
 
-
-def test_fixture_summaries_do_not_reveal_secrets():
-    result = prepare_config_update(
-        load_fixture("source_happ_vless_reality_1.json"),
-        load_fixture("router_base_singbox.json"),
-    )
-    summaries_text = json.dumps(result.preview, ensure_ascii=False)
-
-    for secret in [
-        "TEST-HAPP-VLESS-UUID-1",
-        "TEST-OLD-ROUTER-UUID",
-        "TEST-OLD-ROUTER-PASSWORD",
-        "TEST-HAPP-PUBLIC-KEY-1",
-        "TESTSHORTID1",
-        "TEST-OLD-PRIVATE-KEY",
-    ]:
-        assert secret not in summaries_text
-
-    old_summary = result.preview["old_outbound"]
-    new_summary = result.preview["new_outbound"]
-    assert old_summary["uuid"] == "***"
-    assert old_summary["password"] == "***"
-    assert old_summary["tls"]["private_key"] == "***"
-    assert new_summary["uuid"] == "***"
-    assert new_summary["tls"]["reality"]["public_key"] == "***"
-    assert new_summary["tls"]["reality"]["short_id"] == "***"
-
-
-def test_hysteria_fixture_summary_masks_auth_as_password():
-    result = prepare_config_update(
-        load_fixture("source_happ_hysteria2.json"),
-        load_fixture("router_base_singbox.json"),
-    )
     summaries_text = json.dumps(result.preview, ensure_ascii=False)
 
     assert "TEST-HYSTERIA2-AUTH-PASSWORD" not in summaries_text

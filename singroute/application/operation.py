@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from singroute.core.auto_outbounds import active_selection, replace_selection
@@ -105,8 +105,35 @@ def parse_imported_selection(
             if engine == "xray"
             else ProxySelection((server,))
         )
-    config = _loads_config(config_text.lstrip("\ufeff"), "imported_config")
-    return select_xray_source(config) if engine == "xray" else select_source(config)
+    config, warnings = _loads_imported_config(config_text.lstrip("\ufeff"))
+    selection = (
+        select_xray_source(config) if engine == "xray" else select_source(config)
+    )
+    return replace(selection, warnings=(*warnings, *selection.warnings))
+
+
+def _loads_imported_config(config_text: str) -> tuple[Any, tuple[str, ...]]:
+    try:
+        return _loads_config(config_text, "imported_config"), ()
+    except ConfigParseError as error:
+        cause = error.__cause__
+        if not isinstance(cause, json.JSONDecodeError) or cause.msg != "Extra data":
+            raise
+        # Extra data means the first document parsed completely. Only discard
+        # verbatim copies; differing documents or damaged tails are ambiguous.
+        first = config_text[: cause.pos].strip(" \t\r\n")
+        if not first.startswith("{"):
+            raise
+        position = cause.pos
+        while position < len(config_text):
+            if not config_text.startswith(first, position):
+                raise
+            position += len(first)
+            while position < len(config_text) and config_text[position] in " \t\r\n":
+                position += 1
+        return _loads_config(first, "imported_config"), (
+            "Конфиг повторялся несколько раз. Импортирована одна копия.",
+        )
 
 
 def config_text_exceeds_limit(config_text: str) -> bool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -10,17 +11,18 @@ import socket
 import subprocess
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
 
-import paramiko
 import pytest
+from config_samples import UUID, xray_server
+from local_proxy import _unused_ports
+from router_shell import run_router_shell
 
 from singroute.application.router_client import CommandResult
 
 
 class LocalRouter:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, required_engines=("sing-box", "xray")):
         self.root = root
         self.binaries = {
             "sing-box": os.environ.get("SING_BOX_BINARY") or shutil.which("sing-box"),
@@ -31,7 +33,7 @@ class LocalRouter:
             if Path("C:/Program Files/Git/bin/bash.exe").is_file()
             else None
         )
-        if not all(self.binaries.values()) or not self.shell:
+        if not all(self.binaries[name] for name in required_engines) or not self.shell:
             pytest.skip(
                 "Set SING_BOX_BINARY and XRAY_BINARY; bash is required for real file replacement"
             )
@@ -59,16 +61,20 @@ class LocalRouter:
             encoding="utf-8",
         )
         self.path("/tmp").mkdir(parents=True, exist_ok=True)
+        self.put(
+            "/etc/config/sing-box",
+            "config sing-box 'main'\n\toption conffile '/etc/sing-box/config.json'\n",
+        )
 
     @staticmethod
-    def uci_values(text):
+    def uci_values(text, package="xray"):
         values, section = {}, ""
         for line in text.splitlines():
             parts = shlex.split(line, comments=True)
             if len(parts) == 3 and parts[0] == "config":
                 section = parts[2]
             elif len(parts) == 3 and parts[0] == "option":
-                values[f"xray.{section}.{parts[1]}"] = parts[2]
+                values[f"{package}.{section}.{parts[1]}"] = parts[2]
         return values
 
     def set_uci_option(self, path, key, value):
@@ -129,7 +135,15 @@ class LocalRouter:
 
     def start(self, engine):
         self.stop(engine)
-        config = self.path(f"/etc/{engine}/config.json")
+        config = (
+            self.path(
+                self.uci_values(self.read_text("/etc/config/sing-box"), "sing-box")[
+                    "sing-box.main.conffile"
+                ]
+            )
+            if engine == "sing-box"
+            else self.path("/etc/xray/config.json")
+        )
         log = (self.root / f"{engine}-{len(self.logs)}.log").open("w", encoding="utf-8")
         self.logs.append(log)
         args = [
@@ -167,18 +181,53 @@ class LocalRouter:
 
     def run(self, command, input_text=None):
         self.calls.append(command)
+        if command.startswith("# "):
+            runtime = {}
+            for name in self.binaries:
+                if self.running(name):
+                    args = []
+                    for arg in self.processes[name].args[1:]:
+                        try:
+                            args.append(
+                                "/" + Path(arg).relative_to(self.root).as_posix()
+                            )
+                        except ValueError:
+                            args.append(arg)
+                    runtime[name] = [f"/usr/bin/{name}", *args]
+            settings = {}
+            for name in self.binaries:
+                settings.update(
+                    self.uci_values(self.read_text("/etc/config/" + name), name)
+                )
+            return run_router_shell(
+                command,
+                root=self.root,
+                installed={name for name, binary in self.binaries.items() if binary},
+                active=set(runtime),
+                settings=settings,
+                runtime_commands=runtime,
+                boot=self.boot,
+                pending=self.pending_uci,
+                input_text=input_text,
+            )
         if command == "cat /etc/openwrt_release":
             return CommandResult(
                 command, 0, "DISTRIB_DESCRIPTION='OpenWrt local-test'\n"
             )
         if command.startswith("command -v "):
             engine = command.split()[-1]
-            return CommandResult(command, 0, f"/usr/bin/{engine}\n")
+            installed = bool(self.binaries[engine])
+            return CommandResult(
+                command,
+                0 if installed else 1,
+                f"/usr/bin/{engine}\n" if installed else "",
+            )
         if command == "test -r /etc/config/xray":
             return CommandResult(command, 0)
         if command.startswith("uci -q get "):
-            values = self.uci_values(self.read_text("/etc/config/xray"))
             key = command.split()[-1]
+            package = key.split(".")[0]
+            values = self.uci_values(self.read_text("/etc/config/" + package), package)
             return CommandResult(
                 command, 0 if key in values else 1, values.get(key, "")
             )
@@ -204,7 +253,29 @@ class LocalRouter:
             self.flag = command.split("=", 1)[1][0]
             return CommandResult(command, 0)
         if command.startswith("test -x /etc/init.d/"):
-            return CommandResult(command, 0)
+            return CommandResult(
+                command, 0 if self.binaries[command.rsplit("/", 1)[-1]] else 1
+            )
+        if command.startswith("ubus call service list "):
+            name = json.loads(shlex.split(command)[-1])["name"]
+            instances = {}
+            if self.running(name):
+                args = self.processes[name].args
+                remote_args = []
+                for arg in args[1:]:
+                    try:
+                        remote_args.append(
+                            "/" + Path(arg).relative_to(self.root).as_posix()
+                        )
+                    except ValueError:
+                        remote_args.append(arg)
+                instances["main"] = {
+                    "running": True,
+                    "command": [f"/usr/bin/{name}", *remote_args],
+                }
+            return CommandResult(
+                command, 0, json.dumps({name: {"instances": instances}})
+            )
         service = re.fullmatch(
             r"(?:sleep (\d+); )?/etc/init.d/(sing-box|xray) (\w+)", command
         )
@@ -264,7 +335,9 @@ class LocalRouter:
             )
         # Execute the production compare/write/backup/rollback shell commands.
         rewritten = re.sub(
-            r"/(?:etc|tmp)/[^\s'\";)]+", lambda m: self.path(m[0]).as_posix(), command
+            r"/(?:etc|tmp|opt)/[^\s'\";)]+",
+            lambda m: self.path(m[0]).as_posix(),
+            command,
         )
         shell_result = subprocess.run(
             [self.shell, "-c", rewritten],
@@ -307,94 +380,65 @@ def wait_port(port):
     raise AssertionError("Local proxy did not start")
 
 
-@contextmanager
-def loopback_ssh_client(router):
-    """Use the product's SSH client through a real local SSH transport."""
-    from singroute.infrastructure.ssh_router import SshRouterClient
-
-    key = paramiko.RSAKey.generate(2048)
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    port = listener.getsockname()[1]
-    transport_holder = []
-    channels = []
-    workers = []
-
-    class Server(paramiko.ServerInterface):
-        def check_auth_password(self, username, password):
-            return (
-                paramiko.AUTH_SUCCESSFUL
-                if (username, password) == ("root", "test-password")
-                else paramiko.AUTH_FAILED
-            )
-
-        def get_allowed_auths(self, username):
-            return "password"
-
-        def check_channel_request(self, kind, chanid):
-            return (
-                paramiko.OPEN_SUCCEEDED
-                if kind == "session"
-                else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
-            )
-
-        def check_channel_exec_request(self, channel, command):
-            def execute():
-                command_text = command.decode("utf-8")
-                try:
-                    # EOF also guarantees the exec-request acceptance reached
-                    # the client before this worker sends output/exit status.
-                    data = bytearray()
-                    while chunk := channel.recv(32768):
-                        data.extend(chunk)
-                    content = data.decode("utf-8") if data else None
-                    result = router.run(command_text, content)
-                    if result.stdout:
-                        channel.sendall(result.stdout.encode("utf-8"))
-                    if result.stderr:
-                        channel.sendall_stderr(result.stderr.encode("utf-8"))
-                    channel.send_exit_status(result.exit_code)
-                    channel.shutdown_write()
-                finally:
-                    channel.close()
-
-            worker = threading.Thread(target=execute, daemon=True)
-            workers.append(worker)
-            worker.start()
-            return True
-
-    def serve():
-        connection, _ = listener.accept()
-        transport = paramiko.Transport(connection)
-        transport_holder.append(transport)
-        transport.add_server_key(key)
-        transport.start_server(server=Server())
-        while transport.is_active():
-            channel = transport.accept(timeout=0.1)
-            if channel is not None:
-                channels.append(channel)
-
-    server = threading.Thread(target=serve, daemon=True)
-    server.start()
-    progress = []
-    client = SshRouterClient(
-        "127.0.0.1",
-        port=port,
-        password="test-password",
-        auth_mode="password",
-        trusted_host_key=f"{key.get_name()} {key.get_base64()}",
-        progress_callback=progress.append,
-        command_timeout=20,
+def setup_local(router):
+    backend, proxy, other = _unused_ports(3)
+    router.put(
+        "/etc/sing-box/config.json",
+        json.dumps(
+            {
+                "inbounds": [
+                    {"type": "mixed", "listen": "127.0.0.1", "listen_port": other}
+                ],
+                "outbounds": [{"type": "direct", "tag": "proxy"}],
+            }
+        ),
     )
-    try:
-        client.connect()
-        yield client, progress
-    finally:
-        client.close()
-        for transport in transport_holder:
-            transport.close()
-        listener.close()
-        server.join(timeout=5)
-        for worker in workers:
-            worker.join(timeout=5)
+    router.put(
+        "/etc/xray/config.json",
+        json.dumps(
+            {
+                "inbounds": [
+                    {"protocol": "http", "listen": "127.0.0.1", "port": proxy}
+                ],
+                "outbounds": [
+                    xray_server("proxy"),
+                    {"protocol": "freedom", "tag": "direct"},
+                ],
+            }
+        ),
+    )
+    backend_config = {
+        "log": {"loglevel": "debug"},
+        "inbounds": [
+            {
+                "protocol": "vless",
+                "listen": "127.0.0.1",
+                "port": backend,
+                "settings": {"clients": [{"id": UUID}], "decryption": "none"},
+                "streamSettings": {"network": "tcp", "security": "none"},
+            }
+        ],
+        "outbounds": [
+            {
+                "protocol": "freedom",
+                "settings": {
+                    "finalRules": [{"action": "allow", "ip": ["127.0.0.1/32"]}]
+                },
+            }
+        ],
+    }
+    path = router.root / "backend.json"
+    path.write_text(json.dumps(backend_config), encoding="utf-8")
+    log = (router.root / "backend.log").open("w", encoding="utf-8")
+    router.logs.append(log)
+    process = subprocess.Popen(
+        [router.binaries["xray"], "run", "-config", str(path)],
+        stdout=log,
+        stderr=log,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    router.processes["backend"] = process
+    wait_port(backend)
+    source = {"outbounds": [xray_server("imported", port=backend)]}
+    source["outbounds"][0]["settings"]["vnext"][0]["address"] = "127.0.0.1"
+    return source, proxy, other

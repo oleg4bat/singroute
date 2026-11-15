@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -76,6 +75,7 @@ from singroute.application.operation import (
     config_text_exceeds_limit,
     validate_imported_config,
 )
+from singroute.application.router_client import RouterFileReadError
 from singroute.application.router_connection import (
     RouterInfo,
     inspect_router,
@@ -83,8 +83,6 @@ from singroute.application.router_connection import (
 from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
-    apply_router_update,
-    prepare_router_update,
     read_router_outbound_summary,
 )
 from singroute.application.ruantiblock import (
@@ -134,8 +132,6 @@ class _ConnectionSnapshot:
     host: str
     username: str
     port: int
-    config_path: str
-    service_name: str
     identity_file: str | None
     entered_password: str
     remember_password: bool
@@ -662,6 +658,8 @@ class MainWindow(QMainWindow):
                     else "В буфере некорректный JSON."
                 )
                 message += f" Строка {cause.lineno}, столбец {cause.colno}."
+                if not from_file:
+                    message += " Скопируйте конфиг целиком ещё раз."
             else:
                 message = "JSON слишком глубоко вложен."
         elif isinstance(error, UnsupportedVlessTransportError):
@@ -894,10 +892,8 @@ class MainWindow(QMainWindow):
             if self._router_info
             else None
         )
-        return (
-            f"Порт {self.settings.port} · {auth_labels.get(self.settings.auth_mode, 'авто')} · "
-            f"{engine.config_path if engine else self.settings.config_path}"
-        )
+        summary = f"Порт {self.settings.port} · {auth_labels.get(self.settings.auth_mode, 'авто')}"
+        return summary + (f" · {engine.config_path}" if engine else "")
 
     def _remember_password_changed(self, _checked: bool) -> None:
         self._set_password_placeholder()
@@ -948,8 +944,6 @@ class MainWindow(QMainWindow):
                 client.connect()
                 info = inspect_router(
                     client,
-                    snapshot.config_path,
-                    snapshot.service_name,
                     self.operation_progress.emit,
                 )
                 return ConnectedRouter(client, info)
@@ -1112,34 +1106,6 @@ class MainWindow(QMainWindow):
         self.new_preview.clear()
         self._refresh_preview_for_state()
 
-    def _refresh_router_engines_after_update(self, successful: bool = True) -> None:
-        client = self._connected_client
-        if client is None:
-            return
-
-        def action() -> RouterInfo:
-            self._active_client = client
-            return inspect_router(
-                client, self.settings.config_path, self.settings.service_name
-            )
-
-        def finished(result: object) -> None:
-            self._router_info = result
-            self._transfer_requested = False
-            self._sync_engine_controls()
-            if successful:
-                self._check_ruantiblock_after_update()
-            if not successful or not self.source_editor.toPlainText().strip():
-                self._refresh_preview_for_state()
-
-        self._run_worker(
-            action,
-            finished,
-            "Проверяю состояние движков…",
-            retry=lambda: self._refresh_router_engines_after_update(successful),
-            cancellable=True,
-        )
-
     def _refresh_preview_for_state(self) -> None:
         if self._connected_client is None or self._busy:
             return
@@ -1153,14 +1119,16 @@ class MainWindow(QMainWindow):
                 message = (
                     engine.issue
                     if engine
-                    else "На роутере не установлены sing-box и Xray. Установите и настройте один из движков через пакеты OpenWrt."
+                    else "На роутере не установлены sing-box и Xray. Установите пакет sing-box или xray-core и настройте его в OpenWrt."
                 )
                 self.old_preview.setPlainText(message)
                 self.new_preview.setPlainText(
                     "Перенос и обновление недоступны. Сначала устраните причину, указанную слева, и переподключитесь к роутеру."
                 )
                 self.status_label.setText(
-                    "Обновление недоступно — причина указана в предварительном просмотре"
+                    "Подключено. Обновление недоступно — причина в превью."
+                    if engine
+                    else "Подключено. Установите и настройте sing-box или Xray на роутере."
                 )
                 return
         if self.source_editor.toPlainText().strip() or self._transfer_requested:
@@ -1186,13 +1154,16 @@ class MainWindow(QMainWindow):
             else None
         )
 
+        if engine is None or engine.issue:
+            return
+
         def action() -> dict[str, Any]:
             self.operation_progress.emit("Читаю текущий outbound роутера…")
             self._active_client = client
             return read_router_outbound_summary(
                 client,
-                config_path=engine.config_path if engine else self.settings.config_path,
-                engine=engine.name if engine else "sing-box",
+                config_path=engine.config_path,
+                engine=engine.name,
             )
 
         self._run_worker(
@@ -1245,19 +1216,15 @@ class MainWindow(QMainWindow):
             return
         imported_text = self.source_editor.toPlainText()
         info, target = self._router_info, self._target_engine
+        if info is None:
+            return
         both, transfer = self.engine_action.isChecked(), self._transfer_requested
 
-        def action() -> RouterUpdatePlan | EngineUpdatePlan:
+        def action() -> EngineUpdatePlan:
             self.operation_progress.emit("Читаю текущий конфиг роутера…")
             self._active_client = client
-            if info is not None:
-                return prepare_engine_update(
-                    imported_text, client, info, target, both, transfer
-                )
-            return prepare_router_update(
-                imported_text,
-                client,
-                config_path=self.settings.config_path,
+            return prepare_engine_update(
+                imported_text, client, info, target, both, transfer
             )
 
         self._run_worker(
@@ -1327,25 +1294,24 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         plan = self.update_plan
+        if not isinstance(plan, EngineUpdatePlan):
+            self.update_plan = None
+            self.apply_button.setEnabled(False)
+            self.status_label.setText(
+                "Обновите подключение и предварительный просмотр."
+            )
+            return
         if not self._save_settings():
             return
 
         def action() -> RouterUpdateResult:
             self.operation_progress.emit("Начинаю безопасное обновление роутера…")
             self._active_client = client
-            if isinstance(plan, EngineUpdatePlan):
-                return apply_engine_update(
-                    plan, client, self.settings.config_path, self.settings.service_name
-                )
-            return apply_router_update(
-                plan,
-                client,
-                service_name=self.settings.service_name,
-            )
+            return apply_engine_update(plan, client)
 
         self._run_worker(
             action,
-            self._update_finished,
+            lambda result: self._update_finished(result, plan),
             "Проверяю и обновляю конфиг роутера…",
             retry=self._apply_update,
             cancellable=False,
@@ -1353,9 +1319,16 @@ class MainWindow(QMainWindow):
                 "Безопасное обновление уже началось. Дождитесь его завершения, "
                 "чтобы не оставить роутер с частично применённым конфигом."
             ),
+            on_failure=self._router_update_failed,
         )
 
-    def _update_finished(self, result: object) -> None:
+    def _router_update_failed(self, error: object) -> None:
+        self._disconnect_router("Переподключитесь перед повторным обновлением.")
+        self._show_error(error)
+
+    def _update_finished(
+        self, result: object, plan: EngineUpdatePlan | None = None
+    ) -> None:
         if not isinstance(result, RouterUpdateResult):
             raise TypeError("Некорректный результат обновления")
         self._append_log(result.message)
@@ -1366,10 +1339,27 @@ class MainWindow(QMainWindow):
         if result.backup_path and not result.backup_deleted:
             self._append_log(f"Резервная копия оставлена: {result.backup_path}")
         self.status_label.setText(result.message)
+        self.update_plan = None
+        self.apply_button.setEnabled(False)
+        self._transfer_requested = False
+        if not result.service_state_known:
+            self._disconnect_router(
+                "Состояние служб не подтверждено — переподключитесь к роутеру."
+            )
+        elif plan is not None:
+            self._router_info = (
+                plan.applied_router_info() if result.success else plan.router_info
+            )
+            self._sync_engine_controls()
         if result.success:
-            self.apply_button.setEnabled(False)
-            self.update_plan = None
-            self.old_preview.clear()
+            if plan is not None and result.service_state_known:
+                self.old_preview.setPlainText(
+                    json.dumps(
+                        plan.primary.preview["new_outbound"],
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             self.new_preview.clear()
             if result.partial or (result.backup_path and not result.backup_deleted):
                 self.show_log_check.setChecked(True)
@@ -1380,11 +1370,12 @@ class MainWindow(QMainWindow):
                 )
             else:
                 QMessageBox.information(self, "Готово", result.message)
-            if isinstance(self._router_info, RouterInfo):
-                self._refresh_router_engines_after_update()
-            else:
+            if result.service_state_known:
                 self._check_ruantiblock_after_update()
         else:
+            if result.service_state_known and not result.partial and plan is not None:
+                self.update_plan = plan
+                self.apply_button.setEnabled(plan.has_changes)
             self.show_log_check.setChecked(True)
             QMessageBox.warning(
                 self,
@@ -1393,13 +1384,10 @@ class MainWindow(QMainWindow):
                 else "Обновление не выполнено",
                 _result_details(result),
             )
-            if self._router_info is not None:
-                self._refresh_router_engines_after_update(successful=False)
 
     def _check_ruantiblock_after_update(self) -> None:
         client = self._connected_client
         if client is None or not self.settings.offer_ruantiblock_start:
-            self._prepare_preview_if_ready()
             return
 
         def action() -> RuantiblockState:
@@ -1438,7 +1426,6 @@ class MainWindow(QMainWindow):
             self._append_log(
                 "Состояние ruantiblock не определено; предложение запуска пропущено."
             )
-        self._prepare_preview_if_ready()
 
     def _start_ruantiblock(self) -> None:
         client = self._connected_client
@@ -1466,7 +1453,6 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
         self._append_log(message)
         QMessageBox.information(self, "ruantiblock", "ruantiblock включён.")
-        self._prepare_preview_if_ready()
 
     def _ruantiblock_failed(self, error: object, *, starting: bool) -> None:
         if isinstance(error, SshRouterError):
@@ -1482,7 +1468,6 @@ class MainWindow(QMainWindow):
         if starting:
             self.show_log_check.setChecked(True)
             QMessageBox.warning(self, "ruantiblock", message)
-        self._prepare_preview_if_ready()
 
     def _run_worker(
         self,
@@ -1546,6 +1531,23 @@ class MainWindow(QMainWindow):
             self._retry_action = None
             self.status_label.setText("Операция отменена")
             self._append_log("Операция отменена пользователем.")
+            return
+        if (
+            isinstance(error, RouterFileReadError)
+            and self._connected_client is not None
+        ):
+            self._retry_action = None
+            self.update_plan = None
+            self._show_preview_warnings(())
+            self.apply_button.setEnabled(False)
+            self.old_preview.setPlainText(str(error))
+            self.new_preview.setPlainText(
+                "Настройте движок и его конфиг на роутере, затем переподключитесь."
+            )
+            self.status_label.setText(
+                "Подключено. Конфиг недоступен — подробности в превью."
+            )
+            self._append_log(str(error))
             return
         if (
             isinstance(error, SshRouterError)
@@ -1652,8 +1654,6 @@ class MainWindow(QMainWindow):
             host=current.host,
             username=current.username,
             port=current.port,
-            config_path=current.config_path,
-            service_name=current.service_name,
             identity_file=current.identity_file or None,
             entered_password=self.password_edit.text(),
             remember_password=current.remember_password,
@@ -1717,20 +1717,6 @@ class MainWindow(QMainWindow):
         if not self.username_edit.text().strip():
             QMessageBox.warning(self, "Подключение", "Укажите SSH-пользователя.")
             return False
-        if not self.settings.config_path.startswith("/"):
-            QMessageBox.warning(
-                self,
-                "Путь к конфигу",
-                "В дополнительных настройках укажите абсолютный путь OpenWrt.",
-            )
-            return False
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+", self.settings.service_name):
-            QMessageBox.warning(
-                self,
-                "Служба",
-                "Имя службы в дополнительных настройках содержит недопустимые символы.",
-            )
-            return False
         if (
             self.settings.identity_file
             and not Path(self.settings.identity_file).is_file()
@@ -1752,8 +1738,6 @@ class MainWindow(QMainWindow):
             host=self.host_edit.text().strip(),
             port=base.port,
             username=self.username_edit.text().strip(),
-            config_path=base.config_path,
-            service_name=base.service_name,
             auth_mode=base.auth_mode,
             identity_file=base.identity_file,
             remember_password=self.remember_password_check.isChecked(),
@@ -1871,7 +1855,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_operation_progress(self, message: str) -> None:
-        self.status_label.setText(message)
+        self.status_label.setText(message.split("\n", 1)[0])
         self._append_log(message)
 
     def _append_log(self, message: str) -> None:
@@ -1910,13 +1894,11 @@ class MainWindow(QMainWindow):
 
 def _router_settings_signature(
     settings: AppSettings,
-) -> tuple[int, str, str, str, str]:
+) -> tuple[int, str, str]:
     return (
         settings.port,
         settings.auth_mode,
         settings.identity_file,
-        settings.config_path,
-        settings.service_name,
     )
 
 

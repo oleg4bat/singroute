@@ -5,10 +5,20 @@ import os
 from pathlib import Path
 
 import pytest
+from gui_support import FakeCredentialStore
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEventLoop, QMimeData, QPoint, QPointF, Qt, QTimer, QUrl
+from PySide6.QtCore import (
+    QEventLoop,
+    QMimeData,
+    QPoint,
+    QPointF,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+)
 from PySide6.QtGui import (
     QCloseEvent,
     QDragEnterEvent,
@@ -27,8 +37,8 @@ from singroute.application.app_update import (
     UpdateCheckResult,
 )
 from singroute.application.operation import parse_imported_outbound
-from singroute.application.router_client import CommandResult
-from singroute.application.router_connection import RouterInfo
+from singroute.application.router_client import CommandResult, RouterFileReadError
+from singroute.application.router_connection import RouterEngine, RouterInfo
 from singroute.application.router_update import (
     RouterUpdatePlan,
     RouterUpdateResult,
@@ -41,17 +51,17 @@ from singroute.infrastructure.ssh_router import (
     HostKeyInfo,
     HostKeyMismatchError,
     SshRouterClient,
+    SshRouterError,
     UnknownHostKeyError,
 )
 
 
-def test_auto_import_shows_skipped_nodes_and_replaces_warning_state(tmp_path):
-    from test_auto_outbounds import xray_group, xray_server
+def test_auto_import_shows_skipped_nodes_and_replaces_warning_state(
+    make_window, tmp_path
+):
+    from config_samples import xray_group, xray_server
 
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
-    )
+    window = make_window()
     source = xray_group(xray_server("proxy-good"), xray_server("proxy-bad", "xhttp"))
     assert window._import_source_text(json.dumps(source), "Группа", from_file=False)
     assert "№2" in window.source_warning_label.text()
@@ -67,19 +77,14 @@ def test_auto_import_shows_skipped_nodes_and_replaces_warning_state(tmp_path):
     window._clear_source()
     assert window.source_warning_label.text() == ""
     assert window.source_warning_label.isHidden()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_auto_import_with_no_compatible_nodes_preserves_previous_source(
-    tmp_path, monkeypatch
+    make_window, monkeypatch
 ):
-    from test_auto_outbounds import xray_group, xray_server
+    from config_samples import xray_group, xray_server
 
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
-    )
+    window = make_window()
     previous = json.dumps({"outbounds": [{"type": "vless", "server": "one.test"}]})
     window._import_source_text(previous, "Сервер", from_file=False)
     messages = []
@@ -90,19 +95,16 @@ def test_auto_import_with_no_compatible_nodes_preserves_previous_source(
     assert not window._import_source_text(json.dumps(source), "Группа", from_file=False)
     assert window.source_editor.toPlainText() == previous
     assert "нет совместимых" in messages[0]
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_group_preview_renders_masked_members_and_reports_warnings(tmp_path):
-    from test_auto_outbounds import router_config, xray_group, xray_server
+def test_group_preview_renders_masked_members_and_reports_warnings(
+    make_window, tmp_path
+):
+    from config_samples import router_config, xray_group, xray_server
 
     from singroute.application.operation import prepare_config_update
 
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
-    )
+    window = make_window()
     update = prepare_config_update(
         json.dumps(
             xray_group(xray_server("proxy-good"), xray_server("proxy-bad", "xhttp"))
@@ -123,8 +125,6 @@ def test_group_preview_renders_masked_members_and_reports_warnings(tmp_path):
     assert preview["servers"][0]["uuid"] == "***"
     assert window.preview_warning_label.text() == update.warnings[0]
     assert window.apply_button.isEnabled()
-    window.deleteLater()
-    app.processEvents()
 
 
 @pytest.fixture(autouse=True)
@@ -138,24 +138,28 @@ def disable_scheduled_update_check(monkeypatch: pytest.MonkeyPatch):
         app.clipboard().clear()
 
 
-def test_worker_result_is_delivered_back_to_gui_thread(tmp_path: Path):
+def test_worker_result_is_delivered_back_to_gui_thread(make_window, monkeypatch):
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     loop = QEventLoop()
     timeout = QTimer()
     timeout.setSingleShot(True)
     timeout.timeout.connect(loop.quit)
     received: list[object] = []
+    errors = []
+    monkeypatch.setattr(window, "_show_error", errors.append)
 
     def finished(result: object) -> None:
+        assert QThread.currentThread() == app.thread()
         received.append(result)
         loop.quit()
 
+    def action():
+        assert QThread.currentThread() != app.thread()
+        return {"connected": True}
+
     window._run_worker(
-        lambda: {"connected": True},
+        action,
         finished,
         "Проверка…",
         retry=lambda: None,
@@ -164,29 +168,24 @@ def test_worker_result_is_delivered_back_to_gui_thread(tmp_path: Path):
     timeout.start(2000)
     loop.exec()
 
+    assert not errors
     assert received == [{"connected": True}]
     assert window._busy is False
     assert window._active_worker is None
     timeout.stop()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_connection_worker_uses_gui_thread_snapshot_only(
-    tmp_path: Path,
+    make_window,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     window.host_edit.setText("router-before-worker")
     window.username_edit.setText("admin")
     window.password_edit.setText("one-time-secret")
     actions = []
     client_arguments: list[dict[str, object]] = []
-    inspect_arguments: list[tuple[str, str]] = []
+    inspect_arguments: list[object] = []
 
     class FakeClient:
         def __init__(self, **kwargs: object) -> None:
@@ -201,9 +200,19 @@ def test_connection_worker_uses_gui_thread_snapshot_only(
     def capture_worker(action, *_args, **_kwargs) -> None:
         actions.append(action)
 
-    def fake_inspect(_client, config_path, service_name, _progress):
-        inspect_arguments.append((config_path, service_name))
-        return RouterInfo("OpenWrt test", "/usr/bin/sing-box")
+    def fake_inspect(_client, progress):
+        inspect_arguments.append(progress)
+        return RouterInfo(
+            "OpenWrt test",
+            (
+                RouterEngine(
+                    "sing-box",
+                    "/usr/bin/sing-box",
+                    "/etc/sing-box/config.json",
+                    running=True,
+                ),
+            ),
+        )
 
     monkeypatch.setattr(main_window_module, "SshRouterClient", FakeClient)
     monkeypatch.setattr(main_window_module, "inspect_router", fake_inspect)
@@ -237,20 +246,14 @@ def test_connection_worker_uses_gui_thread_snapshot_only(
             "progress_callback": window.operation_progress.emit,
         }
     ]
-    assert inspect_arguments == [("/etc/sing-box/config.json", "sing-box")]
-    window.deleteLater()
-    app.processEvents()
+    assert inspect_arguments == [window.operation_progress.emit]
 
 
 def test_noncancellable_operation_uses_its_own_close_message(
-    tmp_path: Path,
+    make_window,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     captured: list[str] = []
     monkeypatch.setattr(
         QMessageBox,
@@ -267,26 +270,6 @@ def test_noncancellable_operation_uses_its_own_close_message(
     assert event.isAccepted() is False
     assert captured == ["Дождитесь загрузки обновления SingRoute."]
     window._busy = False
-    window.deleteLater()
-    app.processEvents()
-
-
-class FakeCredentialStore:
-    def __init__(self) -> None:
-        self.passwords: dict[object, str] = {}
-        self.set_calls: list[tuple[object, str]] = []
-        self.delete_calls: list[object] = []
-
-    def get_password(self, target: object) -> str | None:
-        return self.passwords.get(target)
-
-    def set_password(self, target: object, password: str) -> None:
-        self.set_calls.append((target, password))
-        self.passwords[target] = password
-
-    def delete_password(self, target: object) -> None:
-        self.delete_calls.append(target)
-        self.passwords.pop(target, None)
 
 
 @pytest.mark.parametrize("frozen", [False, True])
@@ -417,8 +400,6 @@ def test_advanced_settings_dialog_applies_all_fields(tmp_path: Path):
         port=2222,
         auth_mode="key",
         identity_file="old-key",
-        config_path="/old/config.json",
-        service_name="old-service",
         check_updates_on_startup=True,
     )
     dialog = AdvancedSettingsDialog(settings)
@@ -426,8 +407,6 @@ def test_advanced_settings_dialog_applies_all_fields(tmp_path: Path):
     dialog.port_spin.setValue(2200)
     dialog.auth_combo.setCurrentIndex(dialog.auth_combo.findData("password"))
     dialog.identity_edit.setText("  new-key  ")
-    dialog.config_path_edit.setText("  /new/config.json  ")
-    dialog.service_name_edit.setText("  sing-box-new  ")
     dialog.check_updates_on_startup.setChecked(False)
     dialog.offer_ruantiblock_start.setChecked(False)
     dialog.apply_to(settings)
@@ -435,8 +414,13 @@ def test_advanced_settings_dialog_applies_all_fields(tmp_path: Path):
     assert settings.port == 2200
     assert settings.auth_mode == "password"
     assert settings.identity_file == "new-key"
-    assert settings.config_path == "/new/config.json"
-    assert settings.service_name == "sing-box-new"
+    for attribute in (
+        "config_path_edit",
+        "xray_config_path_edit",
+        "service_name_edit",
+        "paths_panel",
+    ):
+        assert not hasattr(dialog, attribute)
     assert settings.check_updates_on_startup is False
     assert settings.offer_ruantiblock_start is False
     dialog.deleteLater()
@@ -463,12 +447,10 @@ def test_advanced_settings_key_browser_uses_selected_file(
     app.processEvents()
 
 
-def test_password_eye_toggles_visibility_without_changing_password(tmp_path: Path):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+def test_password_eye_toggles_visibility_without_changing_password(
+    make_window, tmp_path: Path
+):
+    window = make_window()
     window.password_edit.setText("router-secret")
 
     assert window.password_edit.echoMode() == window.password_edit.EchoMode.Password
@@ -485,16 +467,10 @@ def test_password_eye_toggles_visibility_without_changing_password(tmp_path: Pat
 
     assert window.password_edit.echoMode() == window.password_edit.EchoMode.Password
     assert window.password_edit.text() == "router-secret"
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_disabling_password_storage_keeps_entered_password(tmp_path: Path):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+def test_disabling_password_storage_keeps_entered_password(make_window, tmp_path: Path):
+    window = make_window()
     prepared_plan = object()
     window.update_plan = prepared_plan  # type: ignore[assignment]
     window.apply_button.setEnabled(True)
@@ -506,19 +482,16 @@ def test_disabling_password_storage_keeps_entered_password(tmp_path: Path):
     assert window.password_edit.text() == "router-secret"
     assert window.update_plan is prepared_plan
     assert window.apply_button.isEnabled() is True
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_vault_failure_does_not_persist_remember_password(tmp_path: Path):
-    app = QApplication.instance() or QApplication([])
+def test_vault_failure_does_not_persist_remember_password(make_window, tmp_path: Path):
     settings_store = PortableSettingsStore(tmp_path / "settings.ini")
 
     class FailingCredentialStore(FakeCredentialStore):
         def set_password(self, target: object, password: str) -> None:
             raise RuntimeError("vault unavailable")
 
-    window = MainWindow(settings_store, FailingCredentialStore())
+    window = make_window(settings_store, FailingCredentialStore())
     window.password_edit.setText("router-secret")
     window.remember_password_check.setChecked(True)
 
@@ -530,18 +503,16 @@ def test_vault_failure_does_not_persist_remember_password(tmp_path: Path):
     assert window.status_label.text() == "Настройки не сохранены"
     assert window.log_edit.isHidden() is False
     assert "vault unavailable" in window.log_edit.toPlainText()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_ini_failure_restores_previous_vault_state(
+    make_window,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    app = QApplication.instance() or QApplication([])
     settings_store = PortableSettingsStore(tmp_path / "settings.ini")
     credentials = FakeCredentialStore()
-    window = MainWindow(settings_store, credentials)
+    window = make_window(settings_store, credentials)
     target = CredentialTarget("192.168.1.1", 22, "root")
     window.password_edit.setText("router-secret")
     window.remember_password_check.setChecked(True)
@@ -557,12 +528,11 @@ def test_ini_failure_restores_previous_vault_state(
     assert window.settings.remember_password is False
     assert window.password_edit.text() == "router-secret"
     assert "read-only directory" in window.log_edit.toPlainText()
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_vault_delete_failure_keeps_remember_password_enabled(tmp_path: Path):
-    app = QApplication.instance() or QApplication([])
+def test_vault_delete_failure_keeps_remember_password_enabled(
+    make_window, tmp_path: Path
+):
     settings_store = PortableSettingsStore(tmp_path / "settings.ini")
     settings_store.save(AppSettings(remember_password=True))
     target = CredentialTarget("192.168.1.1", 22, "root")
@@ -573,7 +543,7 @@ def test_vault_delete_failure_keeps_remember_password_enabled(tmp_path: Path):
 
     credentials = FailingCredentialStore()
     credentials.passwords[target] = "saved-secret"
-    window = MainWindow(settings_store, credentials)
+    window = make_window(settings_store, credentials)
     window.password_edit.setText("one-time-secret")
     window.remember_password_check.setChecked(False)
 
@@ -583,18 +553,17 @@ def test_vault_delete_failure_keeps_remember_password_enabled(tmp_path: Path):
     assert window.settings.remember_password is True
     assert credentials.get_password(target) == "saved-secret"
     assert window.password_edit.text() == "one-time-secret"
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_changing_router_identity_removes_old_saved_credential(tmp_path: Path):
-    app = QApplication.instance() or QApplication([])
+def test_changing_router_identity_removes_old_saved_credential(
+    make_window, tmp_path: Path
+):
     settings_store = PortableSettingsStore(tmp_path / "settings.ini")
     settings_store.save(
         AppSettings(host="old-router", username="root", remember_password=True)
     )
     credentials = FakeCredentialStore()
-    window = MainWindow(settings_store, credentials)
+    window = make_window(settings_store, credentials)
     window.host_edit.setText("new-router")
     window.password_edit.setText("new-password")
 
@@ -605,17 +574,15 @@ def test_changing_router_identity_removes_old_saved_credential(tmp_path: Path):
     assert credentials.set_calls == [(new_target, "new-password")]
     assert old_target in credentials.delete_calls
     assert window.password_edit.text() == ""
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_advanced_update_preference_keeps_prepared_plan(
+    make_window,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    app = QApplication.instance() or QApplication([])
     settings_store = PortableSettingsStore(tmp_path / "settings.ini")
-    window = MainWindow(settings_store, FakeCredentialStore())
+    window = make_window(settings_store, FakeCredentialStore())
     client = SshRouterClient("192.168.1.1")
     prepared_plan = object()
     window._connected_client = client
@@ -646,17 +613,15 @@ def test_advanced_update_preference_keeps_prepared_plan(
     assert window.apply_button.isEnabled() is True
     window._connected_client = None
     client.close()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_failed_advanced_save_keeps_active_settings_and_plan(
+    make_window,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    app = QApplication.instance() or QApplication([])
     settings_store = PortableSettingsStore(tmp_path / "settings.ini")
-    window = MainWindow(settings_store, FakeCredentialStore())
+    window = make_window(settings_store, FakeCredentialStore())
     client = SshRouterClient("192.168.1.1")
     prepared_plan = object()
     window._connected_client = client
@@ -688,16 +653,12 @@ def test_failed_advanced_save_keeps_active_settings_and_plan(
     assert window.apply_button.isEnabled() is True
     window._connected_client = None
     client.close()
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_source_is_read_only_and_triggers_preview_immediately(tmp_path: Path):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+def test_source_is_read_only_and_triggers_preview_immediately(
+    make_window, tmp_path: Path
+):
+    window = make_window()
     calls: list[str] = []
     window._connected_client = SshRouterClient("192.168.1.1")
     window._prepare_preview_if_ready = lambda: calls.append("preview")  # type: ignore[method-assign]
@@ -709,21 +670,61 @@ def test_source_is_read_only_and_triggers_preview_immediately(tmp_path: Path):
     assert calls == ["preview"]
     assert window.log_edit.isHidden() is True
     window._connected_client = None
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_successful_connection_enables_persistent_auto_connect(tmp_path: Path):
-    app = QApplication.instance() or QApplication([])
+@pytest.mark.parametrize("file_error", [True, False])
+def test_file_read_failure_keeps_connection_but_transport_failure_disconnects(
+    make_window, monkeypatch, file_error
+):
+    window = make_window()
+    client = SshRouterClient("192.168.1.1")
+    window._connected_client = window._active_client = client
+    window.update_plan = object()
+    window.apply_button.setEnabled(True)
+    window._show_preview_warnings(("Устаревшее предупреждение",))
+    errors = []
+    monkeypatch.setattr(window, "_show_error", errors.append)
+    error = (
+        RouterFileReadError("/etc/xray/config.json")
+        if file_error
+        else SshRouterError("Соединение разорвано")
+    )
+
+    window._worker_failed(error)
+
+    assert window._connected_client is (client if file_error else None)
+    assert window.update_plan is None
+    assert not window.apply_button.isEnabled()
+    assert window.preview_warning_label.isHidden()
+    assert errors == ([] if file_error else [error])
+    window._disconnect_router()
+
+
+def test_successful_connection_enables_persistent_auto_connect(
+    make_window, tmp_path: Path
+):
     store = PortableSettingsStore(tmp_path / "settings.ini")
-    window = MainWindow(store, FakeCredentialStore())
+    window = make_window(store, FakeCredentialStore())
     client = SshRouterClient("192.168.1.1")
     window.auto_connect_check.setChecked(True)
     refreshes: list[str] = []
     window._refresh_preview_for_state = lambda: refreshes.append("refresh")  # type: ignore[method-assign]
 
     window._connection_finished(
-        ConnectedRouter(client, RouterInfo("OpenWrt test", "/usr/bin/sing-box"))
+        ConnectedRouter(
+            client,
+            RouterInfo(
+                "OpenWrt test",
+                (
+                    RouterEngine(
+                        "sing-box",
+                        "/usr/bin/sing-box",
+                        "/etc/sing-box/config.json",
+                        running=True,
+                    ),
+                ),
+            ),
+        )
     )
 
     assert window._connected_client is client
@@ -731,16 +732,12 @@ def test_successful_connection_enables_persistent_auto_connect(tmp_path: Path):
     assert store.load().auto_connect is True
     assert refreshes == ["refresh"]
     window._connected_client = None
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_connected_without_source_shows_current_router_outbound(tmp_path: Path):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+def test_connected_without_source_shows_current_router_outbound(
+    make_window, tmp_path: Path
+):
+    window = make_window()
     current_outbound = {
         "type": "vless",
         "tag": "proxy",
@@ -759,16 +756,13 @@ def test_connected_without_source_shows_current_router_outbound(tmp_path: Path):
     assert window.status_label.text() == (
         "Текущий сервер загружен — добавьте исходный конфиг"
     )
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_ctrl_v_loads_config_but_keeps_normal_line_edit_paste(tmp_path: Path):
+def test_ctrl_v_loads_config_but_keeps_normal_line_edit_paste(
+    make_window, tmp_path: Path
+):
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     window.show()
     config_text = '{"outbounds": [{"type": "vless"}]}'
     QApplication.clipboard().setText(config_text)
@@ -798,28 +792,22 @@ def test_ctrl_v_loads_config_but_keeps_normal_line_edit_paste(tmp_path: Path):
 
     assert window.host_edit.text() == "10.0.0.1"
     assert window.source_editor.toPlainText() == config_text
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
 
 @pytest.fixture
-def clipboard_import_window(tmp_path: Path):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
-    try:
-        yield window
-    finally:
-        window.close()
-        window.deleteLater()
-        app.processEvents()
+def clipboard_import_window(make_window):
+    return make_window()
 
 
-@pytest.mark.parametrize("url_kind", ["remote", "local", "multiple"])
-@pytest.mark.parametrize("paste_action", ["button", "shortcut"])
+@pytest.mark.parametrize(
+    "url_kind,paste_action",
+    [
+        ("remote", "button"),
+        ("local", "button"),
+        ("multiple", "button"),
+        ("local", "shortcut"),
+    ],
+)
 def test_paste_imports_json_text_even_when_clipboard_also_has_urls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -877,8 +865,15 @@ def test_paste_imports_json_text_even_when_clipboard_also_has_urls(
     assert window.settings.last_import_directory == ""
 
 
-@pytest.mark.parametrize("mime_kind", ["text", "text-and-url", "url"])
-@pytest.mark.parametrize("paste_action", ["button", "shortcut"])
+@pytest.mark.parametrize(
+    "mime_kind,paste_action",
+    [
+        ("text", "button"),
+        ("text-and-url", "button"),
+        ("url", "button"),
+        ("text", "shortcut"),
+    ],
+)
 def test_paste_imports_vless_link_through_real_clipboard(
     monkeypatch: pytest.MonkeyPatch,
     clipboard_import_window: MainWindow,
@@ -1015,43 +1010,79 @@ def test_paste_rejects_invalid_json_text_instead_of_loading_clipboard_file(
     assert window.settings.last_import_directory == ""
     assert len(warnings) == 1
     assert "некорректный JSON" in warnings[0]
-
-
-def test_paste_rejects_incomplete_json_with_location(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        QMessageBox,
-        "warning",
-        lambda _parent, _title, message: warnings.append(message),
-    )
-    QApplication.clipboard().setText('{"outbounds": [{"type": "vless"},')
-
-    window._paste_source()
-
-    assert window.source_editor.toPlainText() == ""
-    assert len(warnings) == 1
-    assert "некорректный JSON" in warnings[0]
     assert "Строка 1" in warnings[0]
-    window.deleteLater()
-    app.processEvents()
+
+
+@pytest.mark.parametrize("import_action", ["button", "shortcut", "file"])
+def test_imports_repeated_json_with_visible_notice(
+    tmp_path, monkeypatch, clipboard_import_window, import_action
+):
+    window = clipboard_import_window
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda _parent, _title, text: messages.append(text)
+    )
+    source = Path(__file__).parent / "fixtures" / "source_happ_vless_ws_tls.json"
+    text = source.read_text(encoding="utf-8")
+    repeated = text.strip() + " " + text.strip()
+
+    if import_action == "file":
+        path = tmp_path / "repeated.json"
+        path.write_text(repeated, encoding="utf-8")
+        monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_: (str(path), ""))
+        window.open_file_button.click()
+    else:
+        QApplication.clipboard().setText(repeated)
+        if import_action == "button":
+            window.paste_button.click()
+        else:
+            window.show()
+            window.source_editor.setFocus()
+            QApplication.instance().processEvents()
+            QTest.keyClick(
+                window.source_editor, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier
+            )
+
+    assert messages == []
+    assert window.source_editor.toPlainText() == repeated
+    assert parse_imported_outbound(window.source_editor.toPlainText()) == (
+        parse_imported_outbound(text)
+    )
+    assert "Импортирована одна копия" in window.source_warning_label.text()
+    assert not window.source_warning_label.isHidden()
+
+    assert window._import_source_text(text, "Один конфиг", from_file=False)
+    assert window.source_warning_label.isHidden()
+
+
+def test_paste_of_differing_json_copies_preserves_previous_source(
+    monkeypatch, clipboard_import_window
+):
+    window = clipboard_import_window
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda _parent, _title, text: messages.append(text)
+    )
+    source = '{"outbounds": [{"type": "vless", "server": "vpn.test"}]}'
+    assert window._import_source_text(source, "Предыдущий конфиг", from_file=False)
+    QApplication.clipboard().setText(source + source.replace("vpn.test", "other.test"))
+
+    window.paste_button.click()
+
+    assert window.source_editor.toPlainText() == source
+    assert window.source_name_label.text() == "Предыдущий конфиг"
+    assert len(messages) == 1
+    assert "Скопируйте конфиг целиком ещё раз" in messages[0]
+    assert "vpn.test" not in messages[0]
+    assert "other.test" not in messages[0]
 
 
 def test_ctrl_v_imports_copied_file_even_when_connection_field_has_focus(
+    make_window,
     tmp_path: Path,
 ):
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     window.show()
     config_path = tmp_path / "source.json"
     config_text = '{"outbounds": [{"type": "vless"}]}'
@@ -1070,19 +1101,13 @@ def test_ctrl_v_imports_copied_file_even_when_connection_field_has_focus(
     assert window.source_editor.toPlainText() == config_text
     assert window.source_name_label.text() == "Загружен файл из буфера: source.json"
     assert window.settings.last_import_directory == str(tmp_path)
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_ctrl_v_reports_unsupported_clipboard_format(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_window, monkeypatch: pytest.MonkeyPatch
 ):
     app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     window.show()
     warnings: list[str] = []
     monkeypatch.setattr(
@@ -1106,19 +1131,12 @@ def test_ctrl_v_reports_unsupported_clipboard_format(
         "Данный формат не поддерживается. Вставьте JSON, ссылку vless:// или "
         "скопируйте один файл с конфигурацией."
     ]
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_copied_file_must_contain_supported_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     warnings: list[str] = []
     monkeypatch.setattr(
         QMessageBox,
@@ -1136,18 +1154,12 @@ def test_copied_file_must_contain_supported_config(
     assert window.source_editor.toPlainText() == ""
     assert window.settings.last_import_directory == ""
     assert warnings and "Данный формат не поддерживается" in warnings[0]
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_open_file_uses_same_source_validation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     warnings: list[str] = []
     monkeypatch.setattr(
         QMessageBox,
@@ -1167,8 +1179,6 @@ def test_open_file_uses_same_source_validation(
     assert window.source_editor.toPlainText() == ""
     assert window.settings.last_import_directory == ""
     assert warnings and "Данный формат не поддерживается" in warnings[0]
-    window.deleteLater()
-    app.processEvents()
 
 
 @pytest.mark.parametrize(
@@ -1190,17 +1200,24 @@ def test_open_file_uses_same_source_validation(
     ],
 )
 def test_open_file_explains_unsupported_vless_transport_without_leaking_values(
+    make_window,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     network: str,
     expected_message: str,
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
+    window = make_window()
+    window._router_info = RouterInfo(
+        "OpenWrt test",
+        (
+            RouterEngine(
+                "sing-box",
+                "/usr/bin/sing-box",
+                "/etc/sing-box/config.json",
+                running=True,
+            ),
+        ),
     )
-    window._router_info = RouterInfo("OpenWrt test", "/usr/bin/sing-box")
     source_config = json.loads(
         (Path(__file__).parent / "fixtures/source_happ_vless_reality_1.json").read_text(
             encoding="utf-8"
@@ -1232,17 +1249,12 @@ def test_open_file_explains_unsupported_vless_transport_without_leaking_values(
     assert warnings == [expected_message]
     assert window.source_editor.toPlainText() == ""
     assert window.settings.last_import_directory == ""
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_import_accepts_happ_grpc_multi_mode_for_reality(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_window, monkeypatch: pytest.MonkeyPatch
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
-    )
+    window = make_window()
     source = (
         Path(__file__).parent / "fixtures/source_happ_vless_reality_grpc.json"
     ).read_text(encoding="utf-8")
@@ -1258,18 +1270,23 @@ def test_import_accepts_happ_grpc_multi_mode_for_reality(
     assert imported
     assert warnings == []
     assert window.source_editor.toPlainText() == source
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_import_rejects_custom_grpc_multi_mode_path_without_leaking_service(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_window, monkeypatch: pytest.MonkeyPatch
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
+    window = make_window()
+    window._router_info = RouterInfo(
+        "OpenWrt test",
+        (
+            RouterEngine(
+                "sing-box",
+                "/usr/bin/sing-box",
+                "/etc/sing-box/config.json",
+                running=True,
+            ),
+        ),
     )
-    window._router_info = RouterInfo("OpenWrt test", "/usr/bin/sing-box")
     source = json.loads(
         (
             Path(__file__).parent / "fixtures/source_happ_vless_reality_grpc.json"
@@ -1293,20 +1310,19 @@ def test_import_rejects_custom_grpc_multi_mode_path_without_leaking_service(
         "путём или без Reality. Импорт остановлен."
     ]
     assert "private-service" not in warnings[0]
-    window.deleteLater()
-    app.processEvents()
 
 
 @pytest.mark.parametrize(
     "target_name", ["window", "host_edit", "source_editor", "old_preview"]
 )
 def test_drop_imports_file_anywhere_in_main_window(
+    make_window,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     target_name: str,
 ):
     app = QApplication.instance() or QApplication([])
-    window = _drop_test_window(tmp_path)
+    window = make_window()
     window.show()
     app.processEvents()
     target = window if target_name == "window" else getattr(window, target_name)
@@ -1365,14 +1381,11 @@ def test_drop_imports_file_anywhere_in_main_window(
     assert window.source_name_label.text() == "Загружен файл: source.json"
     assert window.settings.last_import_directory == str(tmp_path)
     assert preview_calls == ["prepared"]
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_drag_leave_hides_drop_hint(tmp_path: Path):
+def test_drag_leave_hides_drop_hint(make_window, tmp_path: Path):
     app = QApplication.instance() or QApplication([])
-    window = _drop_test_window(tmp_path)
+    window = make_window()
     window.show()
     app.processEvents()
     config_path = tmp_path / "source.json"
@@ -1392,15 +1405,12 @@ def test_drag_leave_hides_drop_hint(tmp_path: Path):
     app.sendEvent(window.host_edit, QDragLeaveEvent())
 
     assert not window.drop_hint.isVisible()
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
 
 @pytest.mark.parametrize("source", ["directory", "remote_url", "multiple_files"])
-def test_drop_rejects_non_single_local_files(tmp_path: Path, source: str):
+def test_drop_rejects_non_single_local_files(make_window, tmp_path: Path, source: str):
     app = QApplication.instance() or QApplication([])
-    window = _drop_test_window(tmp_path)
+    window = make_window()
     config_path = tmp_path / "source.json"
     config_path.write_text('{"outbounds": [{"type": "vless"}]}', encoding="utf-8")
     mime_data = QMimeData()
@@ -1435,13 +1445,11 @@ def test_drop_rejects_non_single_local_files(tmp_path: Path, source: str):
     assert not drop.isAccepted()
     assert window.source_editor.toPlainText() == ""
     assert window.settings.last_import_directory == ""
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_drop_rejected_during_operation(tmp_path: Path):
+def test_drop_rejected_during_operation(make_window, tmp_path: Path):
     app = QApplication.instance() or QApplication([])
-    window = _drop_test_window(tmp_path)
+    window = make_window()
     window.show()
     app.processEvents()
     config_path = tmp_path / "source.json"
@@ -1482,16 +1490,13 @@ def test_drop_rejected_during_operation(tmp_path: Path):
     assert not drop.isAccepted()
     assert window.source_editor.toPlainText() == ""
     window._set_busy(False)
-    window.close()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_drop_uses_file_validation_and_keeps_previous_source_on_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     app = QApplication.instance() or QApplication([])
-    window = _drop_test_window(tmp_path)
+    window = make_window()
     window.show()
     app.processEvents()
     existing_text = '{"outbounds": [{"type": "vless"}]}'
@@ -1530,25 +1535,12 @@ def test_drop_uses_file_validation_and_keeps_previous_source_on_error(
     assert window.settings.last_import_directory == ""
     assert len(warnings) == 1
     assert "некорректный JSON" in warnings[0]
-    window.close()
-    window.deleteLater()
-    app.processEvents()
-
-
-def _drop_test_window(tmp_path: Path) -> MainWindow:
-    store = PortableSettingsStore(tmp_path / "settings.ini")
-    store.save(AppSettings(check_updates_on_startup=False))
-    return MainWindow(store, FakeCredentialStore())
 
 
 def test_paste_rejects_multiple_copied_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     warnings: list[str] = []
     monkeypatch.setattr(
         QMessageBox,
@@ -1568,48 +1560,12 @@ def test_paste_rejects_multiple_copied_files(
 
     assert window.source_editor.toPlainText() == ""
     assert warnings and "Данный формат не поддерживается" in warnings[0]
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_successful_update_clears_stale_preview_and_rechecks_router(
-    tmp_path: Path,
-    monkeypatch,
+def test_failed_validation_displays_both_engine_streams_in_log(
+    make_window, monkeypatch
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
-    window.old_preview.setPlainText("old")
-    window.new_preview.setPlainText("new")
-    window.apply_button.setEnabled(True)
-    rechecks: list[str] = []
-    window._prepare_preview_if_ready = lambda: rechecks.append("recheck")  # type: ignore[method-assign]
-    monkeypatch.setattr(QMessageBox, "information", lambda *args: None)
-    result = RouterUpdateResult(
-        success=True,
-        backup_path="/etc/sing-box/config.json.bak-test",
-        validation_result=CommandResult("sing-box check", 0),
-        backup_deleted=True,
-        message="Готово",
-    )
-
-    window._update_finished(result)
-
-    assert window.old_preview.toPlainText() == ""
-    assert window.new_preview.toPlainText() == ""
-    assert window.apply_button.isEnabled() is False
-    assert rechecks == ["recheck"]
-    window.deleteLater()
-    app.processEvents()
-
-
-def test_failed_validation_displays_both_engine_streams_in_log(tmp_path, monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"), FakeCredentialStore()
-    )
+    window = make_window()
     messages = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: messages.append(args[-1]))
     result = RouterUpdateResult(
@@ -1636,18 +1592,12 @@ def test_failed_validation_displays_both_engine_streams_in_log(tmp_path, monkeyp
     assert "вывод скрыт" not in log
     assert window.status_label.text() == result.message
     assert window.show_log_check.isChecked()
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_rechecked_equal_preview_shows_current_data_without_enabling_update(
-    tmp_path: Path,
+    make_window,
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     current_outbound = {
         "type": "vless",
         "tag": "proxy",
@@ -1671,16 +1621,10 @@ def test_rechecked_equal_preview_shows_current_data_without_enabling_update(
     assert window.update_plan is None
     assert window.apply_button.isEnabled() is False
     assert window.status_label.text() == "Конфиг роутера уже соответствует исходному"
-    window.deleteLater()
-    app.processEvents()
 
 
-def test_yes_no_question_uses_russian_button_labels(tmp_path: Path, monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+def test_yes_no_question_uses_russian_button_labels(make_window, monkeypatch):
+    window = make_window()
     captured: dict[str, str] = {}
 
     def fake_exec(dialog: QMessageBox) -> int:
@@ -1701,8 +1645,6 @@ def test_yes_no_question_uses_russian_button_labels(tmp_path: Path, monkeypatch)
 
     assert answer == QMessageBox.StandardButton.Yes
     assert captured == {"yes": "Да", "no": "Нет"}
-    window.deleteLater()
-    app.processEvents()
 
 
 @pytest.mark.parametrize("changed", [False, True])
@@ -1714,19 +1656,19 @@ def test_yes_no_question_uses_russian_button_labels(tmp_path: Path, monkeypatch)
     ],
 )
 def test_host_key_requires_confirmation_before_saving_and_retrying(
+    make_window,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     changed: bool,
     answer: QMessageBox.StandardButton,
     confirmed: bool,
 ):
-    app = QApplication.instance() or QApplication([])
     store = PortableSettingsStore(tmp_path / "settings.ini")
     old_pin = "ssh-ed25519 OLD"
     store.save(
         AppSettings(trusted_host_keys={"192.168.1.1:22": old_pin} if changed else {})
     )
-    window = MainWindow(store, FakeCredentialStore())
+    window = make_window(store, FakeCredentialStore())
     info = HostKeyInfo("192.168.1.1", 22, "ssh-ed25519", "NEW", "SHA256:new")
     error = HostKeyMismatchError(info) if changed else UnknownHostKeyError(info)
     retries: list[bool] = []
@@ -1751,18 +1693,12 @@ def test_host_key_requires_confirmation_before_saving_and_retrying(
         info.trust_token if confirmed else old_pin if changed else None
     )
     assert retries == ([True] if confirmed else [])
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_background_update_check_marks_available_version_without_dialog(
-    tmp_path: Path,
+    make_window,
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     release = ReleaseInfo(
         version="0.4.0",
         tag="v0.4.0",
@@ -1781,8 +1717,6 @@ def test_background_update_check_marks_available_version_without_dialog(
 
     assert window.app_update_button.text() == "Установить v0.4.0"
     assert "Доступно обновление SingRoute v0.4.0" in window.log_edit.toPlainText()
-    window.deleteLater()
-    app.processEvents()
 
 
 @pytest.mark.parametrize(
@@ -1793,16 +1727,12 @@ def test_background_update_check_marks_available_version_without_dialog(
     ],
 )
 def test_update_install_requires_explicit_confirmation(
-    tmp_path: Path,
+    make_window,
     monkeypatch,
     answer: QMessageBox.StandardButton,
     should_install: bool,
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     release = ReleaseInfo(
         version="0.4.0",
         tag="v0.4.0",
@@ -1835,19 +1765,14 @@ def test_update_install_requires_explicit_confirmation(
     assert "SHA" not in prompts[0]
     assert "контрольн" not in prompts[0]
     assert "автоматически" in prompts[0]
-    window.deleteLater()
-    app.processEvents()
 
 
 def test_verified_update_launches_helper_and_quits_application(
+    make_window,
     tmp_path: Path,
     monkeypatch,
 ):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(
-        PortableSettingsStore(tmp_path / "settings.ini"),
-        FakeCredentialStore(),
-    )
+    window = make_window()
     target = tmp_path / "SingRoute.exe"
     staged_path = tmp_path / ".SingRoute.update-v0.4.0.exe"
     release = ReleaseInfo(
@@ -1881,5 +1806,3 @@ def test_verified_update_launches_helper_and_quits_application(
 
     assert launched == [staged]
     assert quit_calls == [True]
-    window.deleteLater()
-    app.processEvents()

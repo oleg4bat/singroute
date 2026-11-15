@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ctypes
+import os
+import shutil
 import sys
 import time
 from ctypes import wintypes
@@ -8,6 +10,67 @@ from pathlib import Path
 from threading import Event, Thread
 
 import pytest
+
+
+@pytest.fixture(scope="session")
+def qt_app():
+    from PySide6.QtWidgets import QApplication
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+@pytest.fixture
+def make_window(qt_app, tmp_path, monkeypatch):
+    from gui_support import FakeCredentialStore, wait_until
+
+    from singroute.gui.main_window import MainWindow
+    from singroute.infrastructure.settings import PortableSettingsStore
+
+    monkeypatch.setattr(MainWindow, "_check_startup_update_when_idle", lambda _: None)
+    windows = []
+
+    def create(settings_store=None, credential_store=None):
+        store = settings_store or PortableSettingsStore(
+            tmp_path / f"window-{len(windows)}.ini"
+        )
+        window = MainWindow(store, credential_store or FakeCredentialStore())
+        windows.append(window)
+        return window
+
+    yield create
+    for window in reversed(windows):
+        qt_app.processEvents()
+        wait_until(
+            lambda window=window: (
+                window._active_worker is None
+                and window.thread_pool.activeThreadCount() == 0
+            )
+        )
+        window._disconnect_router()
+        window._set_busy(False)
+        window.hide()
+        window.deleteLater()
+        qt_app.processEvents()
+    qt_app.clipboard().clear()
+
+
+def pytest_sessionstart(session):
+    if os.environ.get("SINGROUTE_REQUIRE_ENGINES") != "1":
+        return
+    required = {
+        "sing-box": os.environ.get("SING_BOX_BINARY") or shutil.which("sing-box"),
+        "xray": os.environ.get("XRAY_BINARY") or shutil.which("xray"),
+        "bash": shutil.which("bash") or "C:/Program Files/Git/bin/bash.exe",
+    }
+    missing = [
+        name for name, path in required.items() if not path or not Path(path).is_file()
+    ]
+    if missing:
+        raise pytest.UsageError(
+            "Required integration tools are missing: " + ", ".join(missing)
+        )
 
 
 @pytest.fixture(scope="session")

@@ -1,84 +1,65 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import replace
 
 import pytest
+from router_shell import ShellRouter
 
-from singroute.application.router_client import CommandResult
+from singroute.application.router_client import run_commands
 from singroute.application.router_connection import (
     RouterCompatibilityError,
     inspect_router,
 )
 
 
-def test_inspect_router_returns_release_and_binary_and_reports_progress():
-    client = FakeRouterClient()
-    progress: list[str] = []
-
-    result = inspect_router(
-        client,
-        "/etc/sing-box/config.json",
-        "sing-box",
-        progress.append,
-    )
-
-    assert result.openwrt_release == "OpenWrt 24.10"
-    assert result.sing_box_path == "/usr/bin/sing-box"
-    assert len(progress) == 3
-    assert client.commands == [
-        "cat /etc/openwrt_release",
-        "command -v sing-box",
-        "test -r /etc/sing-box/config.json",
-        "test -x /etc/init.d/sing-box",
-        "/etc/init.d/sing-box status",
-        "/etc/init.d/sing-box enabled",
-        "command -v xray",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("failed_command", "message"),
-    [
-        ("cat /etc/openwrt_release", "OpenWrt"),
-        ("command -v sing-box", "sing-box"),
-        ("test -r /etc/sing-box/config.json", "Конфиг"),
-        ("test -x /etc/init.d/sing-box", "Служба"),
-    ],
-)
-def test_inspect_router_stops_on_failed_compatibility_check(
-    failed_command: str,
-    message: str,
+@pytest.mark.parametrize("openwrt", [True, False])
+def test_discovery_checks_the_host_and_reads_both_services_in_one_request(
+    tmp_path, monkeypatch, openwrt
 ):
-    client = FakeRouterClient(failed_command=failed_command)
+    router = ShellRouter(tmp_path, {"sing-box", "xray"})
+    if not openwrt:
+        run = router.run
 
-    if failed_command == "cat /etc/openwrt_release":
-        with pytest.raises(RouterCompatibilityError, match=message):
-            inspect_router(client, "/etc/sing-box/config.json", "sing-box")
-    else:
-        result = inspect_router(client, "/etc/sing-box/config.json", "sing-box")
-        if failed_command == "command -v sing-box":
-            assert result.available_engines == ()
-        else:
-            assert message in result.available_engines[0].issue
+        def other_os(command):
+            # Change the device's release response, keeping the real shell framing.
+            result = run(command)
+            return replace(result, stdout=result.stdout.replace("OpenWrt", "OtherOS"))
+
+        monkeypatch.setattr(router, "run", other_os)
+        with pytest.raises(RouterCompatibilityError, match="OpenWrt"):
+            inspect_router(router)
+        return
+    progress = []
+    info = inspect_router(router, progress.append)
+    assert progress
+    assert info.openwrt_release == "OpenWrt local-test"
+    assert {e.name for e in info.engines} == {"sing-box", "xray"}
+    assert all(e.running and not e.issue for e in info.engines)
+    assert {e.config_path for e in info.engines} == {
+        "/etc/sing-box/config.json",
+        "/etc/xray/config.json",
+    }
+    assert len(router.calls) == 1
 
 
-@dataclass
-class FakeRouterClient:
-    failed_command: str | None = None
-    commands: list[str] = field(default_factory=list)
+def test_batch_round_trip_preserves_results_and_rejects_an_incomplete_reply(tmp_path):
+    router = ShellRouter(tmp_path, set())
+    commands = {
+        "text": "printf 'first\\nlast'",
+        "failed": "printf 'diagnostic' >&2; false",
+        "empty": "true",
+    }
+    results = run_commands(router, commands, "Batch integration")
+    assert len(router.calls) == 1
+    assert results["text"].stdout == "first\nlast"
+    assert results["failed"].exit_code == 1
+    assert results["failed"].stdout == "diagnostic"
+    assert results["empty"].exit_code == 0 and results["empty"].stdout == ""
 
-    def run(self, command: str) -> CommandResult:
-        self.commands.append(command)
-        if command == self.failed_command:
-            return CommandResult(command, 1)
-        stdout = {
-            "cat /etc/openwrt_release": "DISTRIB_DESCRIPTION='OpenWrt 24.10'\n",
-            "command -v sing-box": "/usr/bin/sing-box\n",
-        }.get(command, "")
-        return CommandResult(command, 0, stdout=stdout)
+    class TruncatedReply:
+        def run(self, command):
+            result = router.run(command)
+            return replace(result, stdout=result.stdout[:-5])
 
-    def read_text(self, path: str) -> str:
-        raise NotImplementedError
-
-    def write_text(self, path: str, content: str) -> None:
-        raise NotImplementedError
+    with pytest.raises(RuntimeError, match="состояние роутера"):
+        run_commands(TruncatedReply(), commands, "Interrupted batch")

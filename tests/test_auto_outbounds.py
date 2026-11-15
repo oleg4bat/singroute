@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 
 import pytest
+from config_samples import UUID, router_config, xray_group, xray_server
 
 from singroute.application.operation import (
     prepare_config_update,
@@ -11,61 +12,6 @@ from singroute.application.operation import (
 )
 from singroute.core.auto_outbounds import managed_member_tags
 from singroute.core.errors import ConfigPatchError, SourceGroupError
-
-UUID = "00000000-0000-4000-8000-000000000001"
-
-
-def xray_server(tag, transport="tcp", port=443):
-    return {
-        "tag": tag,
-        "protocol": "vless",
-        "settings": {
-            "vnext": [
-                {
-                    "address": "server.example.test",
-                    "port": port,
-                    "users": [{"id": UUID, "encryption": "none"}],
-                }
-            ]
-        },
-        "streamSettings": {"network": transport, "security": "none"},
-    }
-
-
-def xray_group(*servers):
-    return {
-        "outbounds": list(servers),
-        "routing": {
-            "rules": [{"type": "field", "network": "tcp,udp", "balancerTag": "main"}],
-            "balancers": [
-                {
-                    "tag": "main",
-                    "selector": ["proxy"],
-                    "strategy": {"type": "leastLoad", "settings": {"expected": 7}},
-                }
-            ],
-        },
-        "dns": {"servers": ["source-dns.example.test"]},
-    }
-
-
-def router_config():
-    return {
-        "dns": {"servers": ["router-dns.example.test"]},
-        "inbounds": [{"type": "tun", "interface_name": "tun0", "auto_route": False}],
-        "route": {"final": "router-proxy", "rules": [{"outbound": "direct"}]},
-        "outbounds": [
-            {
-                "type": "vless",
-                "tag": "router-proxy",
-                "server": "old.example.test",
-                "server_port": 443,
-                "uuid": UUID,
-            },
-            {"type": "direct", "tag": "direct"},
-        ],
-        "experimental": {"cache_file": {"enabled": True}},
-    }
 
 
 def update(source, router=None):

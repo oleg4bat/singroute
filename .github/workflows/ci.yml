@@ -17,6 +17,7 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       QT_QPA_PLATFORM: offscreen
+      SINGROUTE_REQUIRE_ENGINES: "1"
 
     steps:
       - name: Check out repository
@@ -41,6 +42,10 @@ jobs:
 
       - name: Check formatting
         run: poetry run ruff format --check .
+
+      - name: Set up integration engines
+        shell: pwsh
+        run: .\scripts\setup_test_engines.ps1
 
       - name: Run tests with branch coverage
         run: poetry run pytest -q --cov=singroute --cov-report=term-missing

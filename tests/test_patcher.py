@@ -111,17 +111,6 @@ def test_other_router_config_sections_are_preserved():
     assert result["route"] == router_config["route"]
 
 
-def test_old_tag_is_preserved():
-    router_config = {"outbounds": [{"type": "direct", "tag": "router-proxy"}]}
-    new_outbound = {"type": "vless", "tag": "exported-proxy", "server": "example.com"}
-
-    result = patch_router_config(router_config, new_outbound)
-
-    assert result["outbounds"][0]["tag"] == "router-proxy"
-    assert result["outbounds"][0]["type"] == "vless"
-    assert result["outbounds"][0]["server"] == "example.com"
-
-
 def test_router_outbounds_with_invalid_type_raises_clear_error():
     router_config = {"outbounds": {"type": "direct"}}
     new_outbound = {"type": "vless", "server": "example.com"}
@@ -138,6 +127,7 @@ def test_router_outbounds_with_invalid_type_raises_clear_error():
         {"outbounds": ["not-an-object"]},
         {"outbounds": [{"type": "direct"}]},
         {"outbounds": [{"type": "direct", "tag": "   "}]},
+        {"outbounds": [{"type": "direct", "tag": 123}]},
     ],
 )
 def test_patch_router_config_does_not_create_or_guess_active_outbound(router_config):

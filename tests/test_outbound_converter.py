@@ -131,21 +131,6 @@ def test_xray_grpc_rejects_multi_mode_when_path_or_security_is_not_direct_realit
         normalize_outbound_to_singbox(outbound)
 
 
-def test_anonymized_happ_grpc_export_converts_multi_mode_to_regular_grpc():
-    source = json.loads(
-        (FIXTURES / "source_happ_vless_reality_grpc.json").read_text(encoding="utf-8")
-    )
-    outbound = source["outbounds"][0]
-
-    result = normalize_outbound_to_singbox(outbound)
-
-    assert result["transport"] == {
-        "type": "grpc",
-        "service_name": "sample-grpc-service",
-    }
-    assert source["outbounds"][0]["streamSettings"]["grpcSettings"]["multiMode"]
-
-
 def test_anonymized_happ_grpc_export_prepares_router_update_with_multi_mode():
     source = json.loads(
         (FIXTURES / "source_happ_vless_reality_grpc.json").read_text(encoding="utf-8")
@@ -374,17 +359,6 @@ def test_application_accepts_xray_exported_config_and_writes_singbox_outbound():
     assert updated_config["dns"] == {"servers": ["1.1.1.1"]}
     assert "inbounds" not in updated_config
     assert updated_config["outbounds"][1] == {"type": "block", "tag": "blocked"}
-
-
-def test_application_patch_preserves_old_router_tag():
-    result = prepare_config_update(
-        json.dumps({"outbounds": [_xray_hysteria2_outbound()]}),
-        json.dumps({"outbounds": [{"type": "direct", "tag": "router-tag"}]}),
-    )
-    updated_config = result.updated_config
-
-    assert updated_config["outbounds"][0]["type"] == "hysteria2"
-    assert updated_config["outbounds"][0]["tag"] == "router-tag"
 
 
 def test_application_skips_malformed_candidate_and_converts_next_outbound():

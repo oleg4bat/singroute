@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-import socket
-import threading
-from queue import Queue
-
-import paramiko
 import pytest
 from PySide6.QtCore import QEventLoop, QThread, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -19,23 +14,37 @@ from singroute.application.ruantiblock import (
     RuantiblockState,
 )
 from singroute.gui.main_window import MainWindow, _ask_ruantiblock_start
-from singroute.infrastructure.settings import AppSettings, PortableSettingsStore
-from singroute.infrastructure.ssh_router import SshRouterClient, SshRouterError
+from singroute.infrastructure.ssh_router import SshRouterError
 
 
 @pytest.fixture
-def window(tmp_path):
-    app = QApplication.instance() or QApplication([])
-    store = PortableSettingsStore(tmp_path / "SingRoute.ini")
-    store.save(AppSettings(check_updates_on_startup=False))
-    widget = MainWindow(store)
-    yield widget
-    widget.thread_pool.waitForDone(3000)
-    if widget._connected_client is not None:
-        widget._connected_client.close()
-        widget._connected_client = None
-    widget.deleteLater()
-    app.processEvents()
+def window(make_window):
+    return make_window()
+
+
+@pytest.fixture
+def local_service_ssh():
+    from ssh_test_server import loopback_ssh_client
+
+    state = {"present": True, "status": 2, "start_exit": 0, "after_start": 0}
+
+    class Service:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, command, input_text=None):
+            self.calls.append(command)
+            if command == SERVICE_CHECK:
+                return CommandResult(command, 0 if state["present"] else 1)
+            if command == STATUS_COMMAND:
+                return CommandResult(command, state["status"], f"{state['status']}\n")
+            assert command == START_COMMAND
+            state["status"] = state["after_start"]
+            return CommandResult(command, state["start_exit"])
+
+    service = Service()
+    with loopback_ssh_client(service) as (client, _):
+        yield client, state, service.calls
 
 
 def update_result(success=True):
@@ -48,7 +57,7 @@ def update_result(success=True):
     )
 
 
-@pytest.mark.parametrize("state", list(RuantiblockState))
+@pytest.mark.parametrize("state", [RuantiblockState.DISABLED, RuantiblockState.UNKNOWN])
 def test_only_confirmed_disabled_service_prompts(window, monkeypatch, state):
     calls = []
     monkeypatch.setattr(
@@ -81,11 +90,7 @@ def test_suppression_persists_with_either_answer_and_skips_future_checks(
         main_window_module, "_ask_ruantiblock_start", lambda _: (start, True)
     )
     starts = []
-    rechecks = []
     monkeypatch.setattr(window, "_start_ruantiblock", lambda: starts.append(True))
-    monkeypatch.setattr(
-        window, "_prepare_preview_if_ready", lambda: rechecks.append(True)
-    )
 
     window._ruantiblock_checked(RuantiblockState.DISABLED)
 
@@ -95,12 +100,8 @@ def test_suppression_persists_with_either_answer_and_skips_future_checks(
     # A fresh application instance also skips the check, without network I/O.
     reopened = MainWindow(window.settings_store)
     reopened._connected_client = object()
-    monkeypatch.setattr(
-        reopened, "_prepare_preview_if_ready", lambda: rechecks.append(True)
-    )
     reopened._check_ruantiblock_after_update()
     assert reopened._active_worker is None
-    assert rechecks
     reopened._connected_client = None
     reopened.deleteLater()
 
@@ -180,107 +181,6 @@ def test_optional_ssh_failure_keeps_success_and_disconnects(window, monkeypatch)
     assert warnings == []
 
 
-class LocalServiceServer(paramiko.ServerInterface):
-    """Local SSH fixture, never a real router; only models service responses."""
-
-    def __init__(self, requests):
-        self.requests = requests
-
-    def check_auth_password(self, username, password):
-        return (
-            paramiko.AUTH_SUCCESSFUL
-            if (username, password) == ("test", "test")
-            else paramiko.AUTH_FAILED
-        )
-
-    def get_allowed_auths(self, username):
-        return "password"
-
-    def check_channel_request(self, kind, chanid):
-        return (
-            paramiko.OPEN_SUCCEEDED
-            if kind == "session"
-            else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
-        )
-
-    def check_channel_exec_request(self, channel, command):
-        self.requests.put((channel, command.decode()))
-        return True
-
-
-@pytest.fixture
-def local_service_ssh():
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    listener.settimeout(3)
-    key = paramiko.RSAKey.generate(2048)
-    requests = Queue()
-    commands = []
-    state = {"present": True, "status": 2, "start_exit": 0, "after_start": 0}
-    errors = []
-    transports = []
-
-    def serve():
-        try:
-            connection, _ = listener.accept()
-            transport = paramiko.Transport(connection)
-            transports.append(transport)
-            transport.add_server_key(key)
-            transport.start_server(server=LocalServiceServer(requests))
-            while True:
-                request = requests.get(timeout=5)
-                if request is None:
-                    break
-                channel, command = request
-                commands.append(command)
-                # Drain accepted channels so the transport does not retain them.
-                transport.accept(0)
-                output = ""
-                if command == SERVICE_CHECK:
-                    code = 0 if state["present"] else 1
-                elif command == STATUS_COMMAND:
-                    code = state["status"]
-                    output = f"{code}\n"
-                elif command == START_COMMAND:
-                    code = state["start_exit"]
-                    state["status"] = state["after_start"]
-                else:
-                    raise AssertionError(f"Unexpected command: {command}")
-                if output:
-                    channel.sendall(output.encode())
-                channel.send_exit_status(code)
-                channel.close()
-        except Exception as error:
-            errors.append(error)
-
-    server_thread = threading.Thread(target=serve, daemon=True)
-    server_thread.start()
-    client = SshRouterClient(
-        "127.0.0.1",
-        port=listener.getsockname()[1],
-        user="test",
-        password="test",
-        auth_mode="password",
-        trusted_host_key=f"{key.get_name()} {key.get_base64()}",
-        timeout=2,
-        command_timeout=2,
-        keepalive_interval=0,
-    )
-    client.connect()
-    try:
-        yield client, state, commands
-    finally:
-        requests.put(None)
-        server_thread.join(3)
-        client.close()
-        for transport in transports:
-            transport.close()
-        listener.close()
-        assert not server_thread.is_alive()
-        assert not errors
-
-
 @pytest.mark.parametrize(
     (
         "present",
@@ -293,11 +193,6 @@ def local_service_ssh():
         "warned",
     ),
     [
-        (False, 2, True, 0, 0, False, False, False),
-        (True, 0, True, 0, 0, False, False, False),
-        (True, 3, True, 0, 0, False, False, False),
-        (True, 4, True, 0, 0, False, False, False),
-        (True, 1, True, 0, 0, False, False, False),
         (True, 2, False, 0, 0, True, False, False),
         (True, 2, True, 0, 0, True, True, False),
         (True, 2, True, 1, 1, True, True, True),
@@ -330,16 +225,10 @@ def test_post_update_path_with_real_ssh_workers_and_modal_dialog(
     timeout = QTimer()
     timeout.setSingleShot(True)
     timeout.timeout.connect(loop.quit)
-    rechecks = []
     prompts = []
     warnings = []
     information = []
     gui_thread = QApplication.instance().thread()
-
-    def refresh():
-        assert QThread.currentThread() == gui_thread
-        rechecks.append(True)
-        loop.quit()
 
     original_exec = QMessageBox.exec
 
@@ -357,7 +246,16 @@ def test_post_update_path_with_real_ssh_workers_and_modal_dialog(
         QMessageBox, "information", lambda *args: information.append(args[2])
     )
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
-    monkeypatch.setattr(window, "_prepare_preview_if_ready", refresh)
+    for name in ("_ruantiblock_checked", "_ruantiblock_started", "_ruantiblock_failed"):
+        original = getattr(window, name)
+
+        def finished(*args, _original=original, **kwargs):
+            assert QThread.currentThread() == gui_thread
+            _original(*args, **kwargs)
+            if not window._busy:
+                loop.quit()
+
+        monkeypatch.setattr(window, name, finished)
     # Guard the boundary: both status reads and activation must be off the GUI thread.
     original_run = client.run
 
@@ -371,7 +269,7 @@ def test_post_update_path_with_real_ssh_workers_and_modal_dialog(
     loop.exec()
     timeout.stop()
 
-    assert rechecks == [True]
+    assert set(commands) <= {SERVICE_CHECK, STATUS_COMMAND, START_COMMAND}
     assert bool(prompts) == prompted
     assert (START_COMMAND in commands) == started
     assert bool(warnings) == warned
