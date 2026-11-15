@@ -916,6 +916,7 @@ class MainWindow(QMainWindow):
 
     def _invalidate_preview(self, *_: object) -> None:
         self._show_preview_warnings(())
+        self.new_preview.clear()
         if self.update_plan is not None:
             self.update_plan = None
             self.apply_button.setEnabled(False)
@@ -1131,10 +1132,9 @@ class MainWindow(QMainWindow):
                     else "Подключено. Установите и настройте sing-box или Xray на роутере."
                 )
                 return
-        if self.source_editor.toPlainText().strip() or self._transfer_requested:
-            self._prepare_preview_if_ready()
-        else:
-            self._load_current_router_preview()
+        # Show the selected engine's current server independently of whether
+        # the imported source can be converted into a replacement.
+        self._load_current_router_preview()
 
     def _load_current_router_preview(self) -> None:
         client = self._connected_client
@@ -1182,6 +1182,10 @@ class MainWindow(QMainWindow):
         self.old_preview.setPlainText(json.dumps(result, ensure_ascii=False, indent=2))
         self.new_preview.clear()
         self.apply_button.setEnabled(False)
+        self._append_log("Текущий outbound роутера загружен.")
+        if self.source_editor.toPlainText().strip() or self._transfer_requested:
+            self._prepare_preview_if_ready()
+            return
         if result == {"outbounds": []}:
             self.status_label.setText(
                 "Сервер ещё не задан — импортируйте конфиг или перенесите сервер"
@@ -1190,7 +1194,6 @@ class MainWindow(QMainWindow):
             self.status_label.setText(
                 "Текущий сервер загружен — добавьте исходный конфиг"
             )
-        self._append_log("Текущий outbound роутера загружен.")
 
     def _prepare_preview_if_ready(self) -> None:
         if self._connected_client is None or self._busy:
@@ -1515,6 +1518,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _worker_failed(self, error: object) -> None:
         failed_client = self._active_client
+        preparing_preview = self._success_handler == self._preview_finished
         on_failure = self._failure_handler
         self._failure_handler = None
         self._success_handler = None
@@ -1594,6 +1598,11 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("SSH-ключ не подтверждён")
             return
         self._retry_action = None
+        if preparing_preview and self._connected_client is not None:
+            self._invalidate_preview()
+            self.update_plan = None
+            self.apply_button.setEnabled(False)
+            self.new_preview.setPlainText("Не удалось подготовить изменения.")
         self._show_error(error)
 
     def _cancel_operation(self) -> None:

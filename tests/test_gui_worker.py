@@ -799,6 +799,28 @@ def clipboard_import_window(make_window):
     return make_window()
 
 
+def test_paste_nekoray_export_into_xray(make_window, monkeypatch):
+    window = make_window()
+    window._target_engine = "xray"
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    source = (
+        Path(__file__).parent / "fixtures/source_nekoray_vless_reality.json"
+    ).read_text(encoding="utf-8")
+    QApplication.clipboard().setText(source)
+
+    window.paste_button.click()
+
+    assert warnings == []
+    assert window.source_editor.toPlainText() == source
+    assert window.source_name_label.text() == "Конфиг вставлен из буфера"
+    assert window.source_warning_label.isHidden()
+
+
 @pytest.mark.parametrize(
     "url_kind,paste_action",
     [

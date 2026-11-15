@@ -1,0 +1,53 @@
+{
+  "dns": {
+    "independent_cache": true,
+    "rules": [{"outbound": "any", "server": "dns-direct"}],
+    "servers": [
+      {
+        "address": "https://dns.example.test/dns-query",
+        "address_resolver": "dns-local",
+        "detour": "direct",
+        "strategy": "",
+        "tag": "dns-direct"
+      },
+      {"address": "local", "detour": "direct", "tag": "dns-local"}
+    ]
+  },
+  "inbounds": [],
+  "log": {"level": "info"},
+  "outbounds": [
+    {
+      "domain_strategy": "",
+      "flow": "xtls-rprx-vision",
+      "packet_encoding": "",
+      "server": "192.0.2.1",
+      "server_port": 443,
+      "tag": "proxy",
+      "tls": {
+        "enabled": true,
+        "reality": {
+          "enabled": true,
+          "public_key": "CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "short_id": "0123456789abcdef"
+        },
+        "server_name": "server.example.test",
+        "utls": {"enabled": true, "fingerprint": "firefox"}
+      },
+      "type": "vless",
+      "uuid": "00000000-0000-4000-8000-000000000001"
+    },
+    {"tag": "direct", "type": "direct"},
+    {"tag": "bypass", "type": "direct"},
+    {"tag": "block", "type": "block"}
+  ],
+  "route": {
+    "auto_detect_interface": false,
+    "geoip": {"path": "C:/client/nekoray/geoip.db"},
+    "geosite": {"path": "C:/client/nekoray/geosite.db"},
+    "rules": [
+      {"network": "udp", "outbound": "block", "port": [135, 137, 138, 139, 5353]},
+      {"ip_cidr": ["224.0.0.0/3", "ff00::/8"], "outbound": "block"},
+      {"outbound": "block", "source_ip_cidr": ["224.0.0.0/3", "ff00::/8"]}
+    ]
+  }
+}

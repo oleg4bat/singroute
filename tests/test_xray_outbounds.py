@@ -106,6 +106,67 @@ def update(source, router=None):
     )
 
 
+@pytest.mark.parametrize(
+    "empty_options",
+    [
+        ("domain_strategy",),
+        ("packet_encoding",),
+        ("domain_strategy", "packet_encoding"),
+    ],
+)
+def test_nekoray_export_with_empty_options_imports_into_xray(empty_options):
+    source = json.loads(
+        (
+            Path(__file__).parent / "fixtures/source_nekoray_vless_reality.json"
+        ).read_text(encoding="utf-8")
+    )
+    for field in {"domain_strategy", "packet_encoding"} - set(empty_options):
+        source["outbounds"][0].pop(field)
+    router = xray_router()
+    router["outbounds"] = [
+        xray_server("router-proxy"),
+        {"protocol": "freedom", "tag": "direct"},
+    ]
+    before = deepcopy((source, router))
+    selection = validate_imported_config(json.dumps(source), "xray")
+    assert len(selection.servers) == 1
+    server = selection.servers[0]
+    assert server == {
+        "tag": "proxy",
+        "protocol": "vless",
+        "settings": {
+            "vnext": [
+                {
+                    "address": "192.0.2.1",
+                    "port": 443,
+                    "users": [
+                        {"id": UUID, "encryption": "none", "flow": "xtls-rprx-vision"}
+                    ],
+                }
+            ]
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "serverName": "server.example.test",
+                "fingerprint": "firefox",
+                "publicKey": "CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "shortId": "0123456789abcdef",
+            },
+        },
+    }
+    result = update(source, router)
+    expected = deepcopy(router)
+    expected["outbounds"][0] = {**server, "tag": "router-proxy"}
+    assert result.updated_config == expected
+    assert not result.warnings
+    assert result.has_changes
+    assert UUID not in json.dumps(result.preview)
+    assert (source, router) == before
+    assert not update(source, result.updated_config).has_changes
+
+
 def test_imported_group_keeps_native_policy_but_not_client_configuration():
     source, router = native_group(), xray_router()
     original = deepcopy((source, router))
@@ -364,6 +425,13 @@ def test_supported_singbox_connections_convert_back_to_xray(fixture):
         ("network", "tcp"),
         ("bind_interface", "eth0"),
         ("packet_encoding", "packetaddr"),
+        ("packet_encoding", "xudp"),
+        ("domain_strategy", "prefer_ipv4"),
+        ("domain_strategy", None),
+        ("packet_encoding", None),
+        ("packet_encoding", False),
+        ("domain_strategy", {}),
+        ("unknown_option", ""),
     ],
 )
 def test_unmapped_singbox_fields_are_never_silently_dropped(field, value):

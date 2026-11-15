@@ -1,6 +1,7 @@
 """The supported GUI Apply path through real SSH, files and engine processes."""
 
 import json
+from pathlib import Path
 
 import pytest
 from config_samples import UUID
@@ -10,6 +11,88 @@ from PySide6.QtCore import QThread, QTimer
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from ssh_test_server import loopback_ssh_client
 from xray_test_router import LocalRouter, setup_local
+
+from singroute.application.operation import summarize_router_outbound
+from singroute.application.router_connection import inspect_router
+from singroute.gui.main_window import ConnectedRouter
+
+
+@pytest.mark.parametrize("unsupported", [False, True])
+def test_engine_switch_keeps_current_server_when_source_conversion_fails(
+    tmp_path, monkeypatch, make_window, qt_app, unsupported
+):
+    router = LocalRouter(tmp_path / "router")
+    window = make_window()
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_: errors.append(_[-1]))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_: errors.append(_[-1]))
+    try:
+        setup_local(router)
+        assert router.start("xray")
+        before = {
+            engine: router.read_text(f"/etc/{engine}/config.json")
+            for engine in ("sing-box", "xray")
+        }
+        with loopback_ssh_client(router) as (client, _):
+            window._connection_finished(ConnectedRouter(client, inspect_router(client)))
+            wait_until(lambda: not window._busy)
+            window.singbox_radio.click()
+            wait_until(lambda: not window._busy)
+            source = json.loads(
+                (
+                    Path(__file__).parent / "fixtures/source_nekoray_vless_reality.json"
+                ).read_text(encoding="utf-8")
+            )
+            if unsupported:
+                source["outbounds"][0]["detour"] = "direct"
+            text = json.dumps(source)
+            qt_app.clipboard().setText(text)
+            window.paste_button.click()
+            wait_until(lambda: not window._busy)
+            assert window.update_plan is not None
+            assert window.apply_button.isEnabled()
+            assert not errors
+
+            window.xray_radio.click()
+            wait_until(lambda: not window._busy)
+
+            assert json.loads(
+                window.old_preview.toPlainText()
+            ) == summarize_router_outbound(before["xray"], "xray")
+            assert window._connected_client is client
+            assert window.source_editor.toPlainText() == text
+            assert window._router_info.preferred_engine == "xray"
+            if unsupported:
+                assert len(errors) == 1 and "безопасного соответствия" in errors[0]
+                assert (
+                    "Не удалось подготовить изменения"
+                    in window.new_preview.toPlainText()
+                )
+                assert window.update_plan is None
+                assert not window.apply_button.isEnabled()
+            else:
+                assert not errors
+                assert window.update_plan.primary.engine == "xray"
+                assert window.apply_button.isEnabled()
+
+            window.singbox_radio.click()
+            wait_until(lambda: not window._busy)
+            assert window.update_plan.primary.engine == "sing-box"
+            assert window.apply_button.isEnabled()
+            assert json.loads(
+                window.old_preview.toPlainText()
+            ) == summarize_router_outbound(before["sing-box"])
+            assert json.loads(window.new_preview.toPlainText())["type"] == "vless"
+            assert UUID not in window.log_edit.toPlainText()
+            assert all(
+                router.read_text(f"/etc/{engine}/config.json") == original
+                for engine, original in before.items()
+            )
+            assert router.running("xray") and not router.running("sing-box")
+            window._disconnect_router()
+    finally:
+        window._disconnect_router()
+        router.close()
 
 
 @pytest.mark.parametrize(

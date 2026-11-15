@@ -112,6 +112,7 @@ def test_flat_happ_metrics_import_passes_real_engine_check(tmp_path, engine):
         "source_happ_vless_ws_tls.json",
         "source_happ_trojan_tls.json",
         "source_happ_hysteria2.json",
+        "source_nekoray_vless_reality.json",
     ],
 )
 def test_converted_connection_passes_real_xray_test(tmp_path, fixture):

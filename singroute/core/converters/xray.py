@@ -16,6 +16,17 @@ def _only(value: dict[str, Any], allowed: set[str]) -> None:
 
 
 def to_xray(server: dict[str, Any]) -> dict[str, Any]:
+    # Nekoray exports an unset resolver strategy and, for VLESS, an explicit
+    # empty packet encoding (ordinary VLESS UDP, without a packetaddr wrapper).
+    # Accept only these known empty strings, keeping all other options strict.
+    empty_options = {"domain_strategy"}
+    if server.get("type") == "vless":
+        empty_options.add("packet_encoding")
+    server = {
+        key: value
+        for key, value in server.items()
+        if key not in empty_options or value != ""
+    }
     _only(
         server,
         {
